@@ -300,6 +300,9 @@ class CprHandler(FileSystemEventHandler):
         path = Path(event.src_path)
         if path.suffix.lower() != ".cpr":
             return
+        # Ignore Cubase backup copies (filename ends with -01, -02 etc before extension)
+        if re.search(r'-\d{2}$', path.stem):
+            return
         # Debounce: wait 2s after last modification before analysing
         if path in self._debounce_timers:
             self._debounce_timers[path].cancel()
