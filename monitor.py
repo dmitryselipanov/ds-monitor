@@ -158,13 +158,22 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
                 s = m.group(0).decode('ascii', errors='ignore').strip()
                 if not s or s in SKIP:
                     continue
-                if not re.search(r'[a-zA-Z]', s):
+                # Must start with a letter
+                if not s[0].isalpha():
+                    continue
+                # Must contain only letters, digits, spaces, hyphens, underscores, parens, dots
+                if not re.match(r'^[a-zA-Z][a-zA-Z0-9 _\-\.\(\)&]+$', s):
+                    continue
+                # Must look like a name: either contains a space, or is >=6 pure alpha chars
+                has_space = ' ' in s
+                all_alpha = s.replace(' ','').isalpha()
+                if not has_space and len(s) < 6:
+                    continue
+                # Skip camelCase internal field names (e.g. 'audioComponent', 'editController')
+                if re.match(r'^[a-z]+[A-Z]', s) and not has_space:
                     continue
                 # Skip GUIDs and hex strings
                 if re.match(r'^\$[0-9A-Fa-f]+$', s):
-                    continue
-                # Skip strings that are all-caps single words (internal fields)
-                if re.match(r'^[A-Z][a-z]+[A-Z]', s) and ' ' not in s:
                     continue
                 candidates.append((win_start + m.start(), s))
 
