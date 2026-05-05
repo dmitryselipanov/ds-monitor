@@ -196,8 +196,9 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
         t['notes'] = deduped
         result.append(t)
 
-    # Only return tracks that have notes
-    result = [t for t in result if t['notes']]
+    # Only return tracks with musically meaningful content:
+    # at least 2 notes with more than 1 unique pitch (filters controller data)
+    result = [t for t in result if t['notes'] and len(set(n['pitch'] for n in t['notes'])) > 1]
     print(f"  [tracks] {[(t['name'], len(t['notes'])) for t in result[:10]]}")
     return result
 
@@ -394,7 +395,6 @@ def run_analysis(cpr_path: Path):
     state["summary"] = ""
     state["error"] = ""
     print(f"[parsing] {cpr_path.name} ({cpr_path.stat().st_size // 1024 // 1024}MB)...")
-    diagnose_cpr(cpr_path)
 
     try:
         tracks = extract_midi_tracks(cpr_path)
