@@ -12,10 +12,16 @@ import time
 import struct
 import re
 import threading
-import http.server
-import webbrowser
 from pathlib import Path
 from datetime import datetime
+
+try:
+    import rumps
+    HAS_RUMPS = True
+except ImportError:
+    HAS_RUMPS = False
+    import http.server
+    import webbrowser
 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -455,185 +461,103 @@ class CprHandler(FileSystemEventHandler):
 
 # ── Local HTTP Server (floating window) ───────────────────────────────────
 
-HTML = """<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>DS//Monitor</title>
-<style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  font-family: -apple-system, sans-serif;
-  background: #111;
-  color: #eee;
-  font-size: 13px;
-  user-select: none;
-  min-width: 340px;
+
+# ── Menu Bar App ──────────────────────────────────────────────────────────
+
+STATUS_ICONS = {
+    "idle":     "♩",
+    "checking": "⟳",
+    "ok":       "✓",
+    "warning":  "⚠",
+    "error":    "✗",
 }
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  background: #1a1a1a;
-  border-bottom: 1px solid #333;
+
+STATUS_COLORS = {
+    "idle":     "DS//ORCH",
+    "checking": "DS//ORCH — Checking…",
+    "ok":       "DS//ORCH — OK",
+    "warning":  "DS//ORCH — ⚠ Issues",
+    "error":    "DS//ORCH — Error",
 }
-.title { font-family: monospace; font-size: 11px; color: #888; letter-spacing: 2px; }
-.cue { font-weight: 700; font-size: 14px; color: #fff; }
-.time { font-family: monospace; font-size: 10px; color: #555; }
-.status-bar {
-  padding: 6px 12px;
-  font-family: monospace;
-  font-size: 10px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  border-bottom: 1px solid #222;
-}
-.status-idle { color: #555; }
-.status-checking { color: #f90; }
-.status-ok { color: #4c4; background: rgba(64,200,64,.08); }
-.status-warning { color: #f90; background: rgba(255,159,10,.08); }
-.status-error { color: #f44; background: rgba(255,64,64,.08); }
-.summary {
-  padding: 8px 12px;
-  font-size: 12px;
-  color: #aaa;
-  border-bottom: 1px solid #222;
-  line-height: 1.4;
-}
-.checks { padding: 4px 0; }
-.check {
-  padding: 7px 12px;
-  border-bottom: 1px solid #1a1a1a;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.check-header { display: flex; align-items: center; gap: 8px; }
-.track-name { font-weight: 600; font-size: 12px; color: #ddd; }
-.bar-label { font-family: monospace; font-size: 10px; color: #555; }
-.severity-ok { color: #4c4; }
-.severity-warning { color: #f90; }
-.severity-error { color: #f44; }
-.check-issue { font-size: 12px; color: #bbb; line-height: 1.4; }
-.check-suggestion { font-size: 11px; color: #666; font-style: italic; line-height: 1.4; }
-.empty { padding: 20px 12px; color: #444; font-family: monospace; font-size: 11px; text-align: center; }
-.watching { padding: 6px 12px; font-family: monospace; font-size: 9px; color: #333; }
-</style>
-</head>
-<body>
-<div class="header">
-  <div>
-    <div class="title">DS//ORCH</div>
-    <div class="cue" id="cue">—</div>
-  </div>
-  <div class="time" id="time">—</div>
-</div>
-<div class="status-bar" id="status-bar">IDLE</div>
-<div class="summary" id="summary" style="display:none"></div>
-<div class="checks" id="checks"></div>
-<div class="watching">watching ~/Documents/projects</div>
-<script>
-function sevIcon(s) {
-  if (s === 'ok') return '✓';
-  if (s === 'warning') return '⚠';
-  return '✗';
-}
-async function refresh() {
-  try {
-    const r = await fetch('/state');
-    const d = await r.json();
-    document.getElementById('cue').textContent = d.cue || '—';
-    document.getElementById('time').textContent = d.last_saved || '—';
-    const sb = document.getElementById('status-bar');
-    sb.className = 'status-bar status-' + (d.status || 'idle');
-    sb.textContent = d.status === 'checking' ? '⟳ CHECKING...' : (d.status || 'IDLE').toUpperCase();
-    const sum = document.getElementById('summary');
-    if (d.summary) { sum.textContent = d.summary; sum.style.display = ''; }
-    else { sum.style.display = 'none'; }
-    const checks = document.getElementById('checks');
-    if (!d.checks || !d.checks.length) {
-      checks.innerHTML = d.status === 'ok' ? '<div class="empty">All clear</div>' : '';
-    } else {
-      checks.innerHTML = d.checks.map(c => `
-        <div class="check">
-          <div class="check-header">
-            <span class="severity-${c.severity}">${sevIcon(c.severity)}</span>
-            <span class="track-name">${c.track}</span>
-            ${c.bar ? `<span class="bar-label">bar ${c.bar}</span>` : ''}
-          </div>
-          <div class="check-issue">${c.issue}</div>
-          ${c.suggestion ? `<div class="check-suggestion">→ ${c.suggestion}</div>` : ''}
-        </div>`).join('');
-    }
-  } catch(e) {}
-  setTimeout(refresh, 1500);
-}
-refresh();
-</script>
-</body>
-</html>"""
 
-class Handler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, *args): pass  # suppress logs
+class DSMonitorApp(rumps.App):
+    def __init__(self):
+        super().__init__("♩", quit_button=None)
+        self.menu = ["Idle — waiting for save", None, rumps.MenuItem("Quit DS//Monitor", callback=rumps.quit_application)]
+        self._last_status = "idle"
 
-    def do_GET(self):
-        if self.path == "/state":
-            body = json.dumps(state).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", len(body))
-            self.end_headers()
-            self.wfile.write(body)
-        else:
-            body = HTML.encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.send_header("Content-Length", len(body))
-            self.end_headers()
-            self.wfile.write(body)
+    def update_menu(self):
+        s = state["status"]
+        cue = state.get("cue", "")
+        summary = state.get("summary", "")
+        checks = state.get("checks", [])
+
+        # Update icon
+        self.title = STATUS_ICONS.get(s, "♩")
+
+        # Rebuild menu
+        items = []
+        
+        # Header
+        header = cue if cue else "DS//ORCH"
+        if summary:
+            header += f" — {summary[:60]}"
+        items.append(rumps.MenuItem(header, callback=None))
+        items.append(None)
+
+        # Checks
+        if checks:
+            for c in checks[:8]:
+                sev = {"ok": "✓", "warning": "⚠", "error": "✗"}.get(c.get("severity",""), "•")
+                track = c.get("track", "")
+                issue = c.get("issue", "")
+                bar = f" bar {c['bar']}" if c.get("bar") else ""
+                label = f"{sev} {track}{bar}: {issue}"[:80]
+                items.append(rumps.MenuItem(label, callback=None))
+        elif s == "ok":
+            items.append(rumps.MenuItem("✓ All clear", callback=None))
+        elif s == "idle":
+            items.append(rumps.MenuItem("Watching ~/Documents/projects", callback=None))
+        elif s == "checking":
+            items.append(rumps.MenuItem(f"Parsing {cue}…", callback=None))
+
+        items.append(None)
+        items.append(rumps.MenuItem("Quit DS//Monitor", callback=rumps.quit_application))
+
+        self.menu.clear()
+        for item in items:
+            if item is None:
+                self.menu.add(rumps.separator)
+            else:
+                self.menu.add(item)
+
+    @rumps.timer(2)
+    def refresh(self, _):
+        if state["status"] != self._last_status or state.get("checks") or state.get("summary"):
+            self._last_status = state["status"]
+            self.update_menu()
 
 
-# ── Main ──────────────────────────────────────────────────────────────────
-
-def main():
-    if not ANTHROPIC_API_KEY:
-        print("⚠️  Set ANTHROPIC_API_KEY environment variable before running.")
-        print("   export ANTHROPIC_API_KEY=sk-ant-...")
-
-    if not WATCH_DIR.exists():
-        print(f"⚠️  Watch directory not found: {WATCH_DIR}")
-        print("   Create it or update WATCH_DIR in monitor.py")
-
-    # Start HTTP server in background thread
-    server = http.server.HTTPServer(("localhost", PORT), Handler)
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
-
-    # Open floating window
-    url = f"http://localhost:{PORT}"
-    print(f"DS//Monitor running → {url}")
-    webbrowser.open(url)
-
-    # Start file watcher
+def run_menubar():
+    app = DSMonitorApp()
+    # Start watcher in background
     handler = CprHandler()
     observer = Observer()
     observer.schedule(handler, str(WATCH_DIR), recursive=True)
     observer.start()
-    print(f"Watching: {WATCH_DIR}")
-    print("Save any .cpr file to trigger analysis. Ctrl+C to stop.\n")
-
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        observer.stop()
-        server.shutdown()
-
+    print(f"DS//Monitor started — watching {WATCH_DIR}")
+    if not ANTHROPIC_API_KEY:
+        print("⚠ No ANTHROPIC_API_KEY — running in test mode")
+    app.run()
+    observer.stop()
     observer.join()
 
 
+
 if __name__ == "__main__":
-    main()
-
-
+    if HAS_RUMPS:
+        run_menubar()
+    else:
+        print("Install rumps for menu bar: pip3 install rumps")
+        print("Falling back to browser mode...")
+        # fallback
