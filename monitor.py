@@ -316,6 +316,10 @@ class CprHandler(FileSystemEventHandler):
         if not event.is_directory:
             self._handle(event.src_path)
 
+    def on_moved(self, event):
+        if not event.is_directory:
+            self._handle(event.dest_path)
+
 
 # ── Local HTTP Server (floating window) ───────────────────────────────────
 
