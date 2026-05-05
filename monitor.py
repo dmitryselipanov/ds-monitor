@@ -67,8 +67,8 @@ state = {
 
 def extract_midi_tracks(cpr_path: Path) -> list[dict]:
     """
-    Fast binary scan for Instrument tracks.
-    Track names appear 430-2000 bytes before their note records in CPR.
+    Fast binary scan using IDString track name pattern.
+    IDString\x00\x00\x08<name>\x00 is the reliable track name field in CPR.
     """
     data = cpr_path.read_bytes()
     print(f"  [read] {len(data)//1024//1024}MB loaded")
@@ -96,27 +96,6 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
         except:
             pass
 
-    # Known internal names to skip
-    SKIP = {
-        'OldOn','RuntimeID','Volume','Value','AnchorValue','Output','Panner',
-        'Default SurroundPan UID V2','GUID','Default SurroundPan UID',
-        'PannerType','Default DownmixPan UID','Plugin UID','Plugin Name',
-        'Standard Panner','Audio Input Count','Audio Input Arrangement','Type',
-        'Audio Output Count','Audio Output Arrangement','Event Input Count',
-        'Event Output Count','audioComponent','editController','Version',
-        'Editor Size Count','Active','IDString','BypassTag','SummingMode',
-        'outputBusEnable','InputBusArrangementType','Automation','AM,F',
-        'MMidiPartEvent','MPartNode','MMidiPart','MMidiEvent','MMidiNote',
-        'MMidiPolyPressure','MMidiAfterTouch','MMidiProgramChange',
-        'MMidiController','MMidiPitchBend','MMidiSysex','GLFX','Pler','TDRH',
-        'VffO','Name','String','Data','Flags','Color','ID','UID','List','Obj',
-        'Container','Domain','Class','Func','Param','Track','Part','Event',
-        'Plugin','Preset','Bank','Program','Channel','Port','Tempo','Note',
-        'Pitch','Velocity','Length','Position','Start','End','adcn','Iadcn',
-        'MMidiPart','SummingMode','Automation','OldOn','RuntimeID',
-        'Audio Output Count','Audio Input Count','inputBusName','outputBusName',
-    }
-
     # Find note records
     adcn_matches = list(re.finditer(rb'adcn\x00\x01(.{8})', data, re.DOTALL))
     print(f"  [scan] found {len(adcn_matches)} note records")
@@ -126,8 +105,39 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
     cap7_set = {m.group(1)[7] for m in adcn_matches}
     use_block24 = cap7_set == {0}
 
-    # For each note, search the window 430-5000 bytes BEFORE it for a track name
-    # (Track name precedes the MMidiPart structure which is ~430 bytes before notes)
+    # Build track name position map using IDString field pattern
+    # Format: IDString\x00\x00\x08<null-terminated-name>
+    idstring_pattern = rb'IDString\x00\x00\x08([\x20-\x7e]{2,60})\x00'
+    name_positions = []
+    for m in re.finditer(idstring_pattern, data):
+        name = m.group(1).decode('ascii', errors='ignore').strip()
+        if name and len(name) >= 2:
+            name_positions.append((m.start(), name))
+    
+    print(f"  [IDString names] {len(name_positions)} found: {[n for _,n in name_positions[:20]]}")
+
+    # If IDString gives no results, fall back to MidiPart-embedded name search
+    if not name_positions:
+        # Look for track name just before MMidiPartEvent (within 600-1500 bytes)
+        for m in re.finditer(rb'MMidiPartEvent', data):
+            search_start = max(0, m.start() - 1500)
+            search_end = max(0, m.start() - 600)
+            chunk = data[search_start:search_end]
+            strings = re.findall(rb'[a-zA-Z][a-zA-Z0-9 _\-\.]{3,50}', chunk)
+            for s in reversed(strings):
+                name = s.decode('ascii', errors='ignore').strip()
+                if name and re.match(r'^[a-zA-Z][a-zA-Z0-9 _\-\.]+$', name):
+                    name_positions.append((search_start, name))
+                    break
+        print(f"  [MMidiPart fallback] {len(name_positions)} names found")
+
+    if not name_positions:
+        return []
+
+    import bisect
+    name_pos_arr = [p for p,n in name_positions]
+    name_arr = [n for p,n in name_positions]
+
     tracks_dict = {}
 
     for nm in adcn_matches:
@@ -145,43 +155,11 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
             if not (0 < note_length < 1000000):
                 continue
 
-            # Search window: 430 to 5000 bytes before this note
-            win_start = max(0, nm.start() - 5000)
-            win_end = max(0, nm.start() - 430)
-            if win_end <= win_start:
+            # Nearest preceding IDString name
+            idx = bisect.bisect_right(name_pos_arr, nm.start()) - 1
+            if idx < 0:
                 continue
-            chunk = data[win_start:win_end]
-
-            # Find all candidate strings in this window
-            candidates = []
-            for m in re.finditer(rb'[\x20-\x7e]{4,60}', chunk):
-                s = m.group(0).decode('ascii', errors='ignore').strip()
-                if not s or s in SKIP:
-                    continue
-                # Must start with a letter
-                if not s[0].isalpha():
-                    continue
-                # Must contain only letters, digits, spaces, hyphens, underscores, parens, dots
-                if not re.match(r'^[a-zA-Z][a-zA-Z0-9 _\-\.\(\)&]+$', s):
-                    continue
-                # Must look like a name: either contains a space, or is >=6 pure alpha chars
-                has_space = ' ' in s
-                all_alpha = s.replace(' ','').isalpha()
-                if not has_space and len(s) < 6:
-                    continue
-                # Skip camelCase internal field names (e.g. 'audioComponent', 'editController')
-                if re.match(r'^[a-z]+[A-Z]', s) and not has_space:
-                    continue
-                # Skip GUIDs and hex strings
-                if re.match(r'^\$[0-9A-Fa-f]+$', s):
-                    continue
-                candidates.append((win_start + m.start(), s))
-
-            if not candidates:
-                continue
-
-            # Take the LAST candidate (closest before the 430-byte boundary)
-            track_name = candidates[-1][1]
+            track_name = name_arr[idx]
 
             if track_name not in tracks_dict:
                 tracks_dict[track_name] = {
@@ -205,7 +183,7 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
         t['notes'] = sorted(t['notes'], key=lambda n: n['position'])
         result.append(t)
 
-    print(f"  [tracks] {[t['name'] for t in result[:10]]}")
+    print(f"  [tracks] {[t['name'] for t in result[:15]]}")
     return result
 
 
