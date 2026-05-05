@@ -40,19 +40,20 @@ state = {
 
 def extract_midi_tracks(cpr_path: Path) -> list[dict]:
     """
-    Fast binary scan for MIDI tracks with content.
-    Only reads relevant byte patterns, skips full file parse.
+    Fast binary scan for Instrument/MIDI tracks with content.
+    Uses verified adcn\x00\x01 record layout from CubaseTools.
     """
     data = cpr_path.read_bytes()
-    
+    print(f"  [read] {len(data)//1024//1024}MB loaded")
+
     # Extract tempo
     tempo = 120.0
     bpm_match = re.search(rb'BPM\x00\x00\x04(.{8})', data)
     if bpm_match:
         try:
-            tempo = struct.unpack('>d', bpm_match.group(1))[0]
-            if not (20 < tempo < 300):
-                tempo = 120.0
+            t = struct.unpack('>d', bpm_match.group(1))[0]
+            if 20 < t < 300:
+                tempo = t
         except:
             pass
 
@@ -68,98 +69,80 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
         except:
             pass
 
-    # Find track names using IDString pattern
-    # Pattern: track has a name string followed by MIDI note data (adcn records)
-    track_pattern = rb'\x00\x00\x08([^\x00]{2,40})\x00'
-    note_pattern = rb'adcn'
-    
-    # Find all MIDI part markers
-    midi_parts = []
-    for m in re.finditer(rb'adcn(.{28})', data):
-        pos = m.start()
-        # Look back up to 200KB for a track name
-        search_start = max(0, pos - 200000)
-        chunk = data[search_start:pos]
-        # Find last track name in this chunk
-        names = list(re.finditer(rb'\x00\x00\x08([\x20-\x7e]{2,40})\x00', chunk))
-        if names:
-            raw_name = names[-1].group(1).decode('utf-8', errors='ignore').strip()
-            if raw_name and not raw_name.startswith('_'):
-                midi_parts.append({'name': raw_name, 'pos': pos})
-
-    if not midi_parts:
+    # Find all adcn\x00\x01 note records
+    adcn_matches = list(re.finditer(rb'adcn\x00\x01(.{8})', data, re.DOTALL))
+    print(f"  [scan] found {len(adcn_matches)} note records")
+    if not adcn_matches:
         return []
 
-    # Group by track name, extract notes
-    # Known Cubase internal field names to exclude
-    INTERNAL_NAMES = {
+    # Determine pitch location
+    cap7_set = {m.group(1)[7] for m in adcn_matches}
+    use_block24 = cap7_set == {0}
+
+    BOM = b'\xef\xbb\xbf'
+    SKIP_NAMES = {
         'Version', 'CmArray', 'hasVSTi', 'Type', 'Name', 'String', 'Data',
         'Value', 'Flags', 'Color', 'ID', 'UID', 'List', 'Obj', 'Container',
         'Domain', 'Class', 'Func', 'Param', 'Track', 'Part', 'Event',
-        'Plugin', 'Preset', 'Bank', 'Program', 'Channel', 'Port',
+        'Plugin', 'Preset', 'Bank', 'Program', 'Channel', 'Port', 'Tempo',
     }
 
     tracks_dict = {}
-    ppq = 480
 
-    for part in midi_parts:
-        name = part['name']
-        # Skip internal Cubase metadata names
-        if name in INTERNAL_NAMES:
+    for nm in adcn_matches:
+        captured = nm.group(1)
+        block = data[nm.end():nm.end()+37]
+        if len(block) < 37:
             continue
-        # Skip names that look like internal fields (CamelCase single words under 4 chars, or all caps short)
-        if len(name) < 3:
-            continue
-        if name.isupper() and len(name) <= 3:
-            continue
-        name = part['name']
-        pos = part['pos']
-        # Read note data: adcn + 28 bytes header, then note records
-        # Each note: pitch(1B) + flags(1B) + position(4B BE) + velocity(1B) + length(4B BE)
-        chunk = data[pos+4:pos+4+28+1000]  # read up to ~85 notes per part
-        notes = []
-        i = 28  # skip header
-        while i + 10 <= len(chunk):
-            try:
-                pitch = chunk[i]
-                if not (0 <= pitch <= 127):
-                    i += 1
-                    continue
-                position = struct.unpack('>I', chunk[i+2:i+6])[0]
-                velocity = chunk[i+6]
-                length = struct.unpack('>I', chunk[i+7:i+11])[0]
-                if 0 < velocity <= 127 and 0 < length < 10000000:
-                    notes.append({
-                        'pitch': pitch,
-                        'position': position,
-                        'velocity': velocity,
-                        'length': length,
-                    })
-                i += 11
-            except:
-                i += 1
-        
-        if notes:
-            if name not in tracks_dict:
-                tracks_dict[name] = {
-                    'name': name,
-                    'track_type': 'MIDI',
+        try:
+            pitch = block[24] if use_block24 else captured[7]
+            note_length = struct.unpack_from(">d", block, 0)[0]
+            note_pos = struct.unpack_from(">d", block, 26)[0]
+            on_vel = block[35]
+            if not (0 < pitch <= 127 and 0 < on_vel <= 127):
+                continue
+            if not (0 < note_length < 1000000):
+                continue
+
+            # Find nearest track name via BOM marker
+            search_start = max(0, nm.start() - 500000)
+            chunk = data[search_start:nm.start()]
+            bom_pos = chunk.rfind(BOM)
+            track_name = None
+            if bom_pos > 4:
+                name_bytes = chunk[max(0,bom_pos-60):bom_pos]
+                name_match = re.search(rb'[\x20-\x7e]{3,50}$', name_bytes)
+                if name_match:
+                    track_name = name_match.group(0).decode('utf-8', errors='ignore').strip()
+
+            if not track_name or track_name in SKIP_NAMES or len(track_name) < 3:
+                continue
+
+            if track_name not in tracks_dict:
+                tracks_dict[track_name] = {
+                    'name': track_name,
+                    'track_type': 'Instrument',
                     'notes': [],
                     'tempo': tempo,
                     'time_sig': time_sig,
                 }
-            tracks_dict[name]['notes'].extend(notes)
+            tracks_dict[track_name]['notes'].append({
+                'pitch': pitch,
+                'position': round(note_pos, 2),
+                'length': round(note_length, 2),
+                'velocity': on_vel,
+            })
+        except (struct.error, IndexError):
+            continue
 
-    # Sort notes by position per track
     result = []
     for t in tracks_dict.values():
         t['notes'] = sorted(t['notes'], key=lambda n: n['position'])
         result.append(t)
 
+    print(f"  [tracks] {[t['name'] for t in result]}")
     return result
 
-
-# ── music21 Passage Description ───────────────────────────────────────────
 
 def describe_passage(tracks: list[dict]) -> str:
     """Convert extracted MIDI tracks into a readable passage description for Claude."""
