@@ -26,6 +26,33 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SYSTEM_PROMPT_PATH = Path(__file__).parent / "orchestration_knowledge.md"
 PORT = 47291  # local server for floating window
 
+def diagnose_cpr(cpr_path: Path):
+    """Dump bytes around first note record to find track name pattern."""
+    data = cpr_path.read_bytes()
+    adcn = data.find(b'adcn\x00\x01')
+    if adcn < 0:
+        print("No adcn\\x00\\x01 found")
+        return
+    
+    print(f"\n=== First note record at byte {adcn} ===")
+    
+    # Show 200 bytes before the note
+    before = data[max(0,adcn-200):adcn]
+    print(f"\nBytes before note (hex):")
+    for i in range(0, len(before), 16):
+        chunk = before[i:i+16]
+        hex_str = ' '.join(f'{b:02x}' for b in chunk)
+        ascii_str = ''.join(chr(b) if 32 <= b < 127 else '.' for b in chunk)
+        print(f"  {hex_str:<48}  {ascii_str}")
+    
+    # Find any readable strings near the note
+    print(f"\nReadable strings in 2KB before note:")
+    chunk = data[max(0,adcn-2000):adcn]
+    for m in re.finditer(rb'[\x20-\x7e]{4,}', chunk):
+        s = m.group(0).decode('ascii', errors='ignore')
+        print(f"  pos -{adcn - (max(0,adcn-2000) + m.start())}: '{s}'")
+
+
 # ── State ─────────────────────────────────────────────────────────────────
 state = {
     "status": "idle",
@@ -596,28 +623,3 @@ if __name__ == "__main__":
     main()
 
 
-def diagnose_cpr(cpr_path: Path):
-    """Dump bytes around first note record to find track name pattern."""
-    data = cpr_path.read_bytes()
-    adcn = data.find(b'adcn\x00\x01')
-    if adcn < 0:
-        print("No adcn\\x00\\x01 found")
-        return
-    
-    print(f"\n=== First note record at byte {adcn} ===")
-    
-    # Show 200 bytes before the note
-    before = data[max(0,adcn-200):adcn]
-    print(f"\nBytes before note (hex):")
-    for i in range(0, len(before), 16):
-        chunk = before[i:i+16]
-        hex_str = ' '.join(f'{b:02x}' for b in chunk)
-        ascii_str = ''.join(chr(b) if 32 <= b < 127 else '.' for b in chunk)
-        print(f"  {hex_str:<48}  {ascii_str}")
-    
-    # Find any readable strings near the note
-    print(f"\nReadable strings in 2KB before note:")
-    chunk = data[max(0,adcn-2000):adcn]
-    for m in re.finditer(rb'[\x20-\x7e]{4,}', chunk):
-        s = m.group(0).decode('ascii', errors='ignore')
-        print(f"  pos -{adcn - (max(0,adcn-2000) + m.start())}: '{s}'")
