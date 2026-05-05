@@ -91,10 +91,27 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
         return []
 
     # Group by track name, extract notes
+    # Known Cubase internal field names to exclude
+    INTERNAL_NAMES = {
+        'Version', 'CmArray', 'hasVSTi', 'Type', 'Name', 'String', 'Data',
+        'Value', 'Flags', 'Color', 'ID', 'UID', 'List', 'Obj', 'Container',
+        'Domain', 'Class', 'Func', 'Param', 'Track', 'Part', 'Event',
+        'Plugin', 'Preset', 'Bank', 'Program', 'Channel', 'Port',
+    }
+
     tracks_dict = {}
     ppq = 480
 
     for part in midi_parts:
+        name = part['name']
+        # Skip internal Cubase metadata names
+        if name in INTERNAL_NAMES:
+            continue
+        # Skip names that look like internal fields (CamelCase single words under 4 chars, or all caps short)
+        if len(name) < 3:
+            continue
+        if name.isupper() and len(name) <= 3:
+            continue
         name = part['name']
         pos = part['pos']
         # Read note data: adcn + 28 bytes header, then note records
