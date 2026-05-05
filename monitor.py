@@ -83,7 +83,7 @@ def describe_passage(tracks: list[dict]) -> str:
 
     tempo = tracks[0].get("tempo", 120) if tracks else 120
     time_sig = tracks[0].get("time_sig", "4/4") if tracks else "4/4"
-    ppq = 480  # standard PPQ
+    ppq = 480
 
     beats_per_bar = int(time_sig.split("/")[0]) if "/" in time_sig else 4
     ticks_per_bar = ppq * beats_per_bar
@@ -101,6 +101,9 @@ def describe_passage(tracks: list[dict]) -> str:
         bar = int(ticks // ticks_per_bar) + 1
         beat = ((ticks % ticks_per_bar) / ppq) + 1
         return bar, round(beat, 2)
+
+    # Get double stop analysis
+    double_stops = detect_double_stops(tracks)
 
     for track in tracks:
         lines.append(f"## {track['name']} ({track['track_type']})")
@@ -122,20 +125,108 @@ def describe_passage(tracks: list[dict]) -> str:
 
         # Summary stats
         pitches = [n["pitch"] for n in notes]
-        lines.append(f"  Range: {midi_to_name(min(pitches))} – {midi_to_name(max(pitches))}, {len(notes)} notes total\n")
+        lines.append(f"  Range: {midi_to_name(min(pitches))} – {midi_to_name(max(pitches))}, {len(notes)} notes total")
+
+        # Double stops for this track
+        if track["name"] in double_stops:
+            lines.append(f"  Double stops detected:")
+            for ds in double_stops[track["name"]]:
+                lines.append(f"    Bar {ds['bar']}: {ds['lower_name']}+{ds['upper_name']} ({ds['interval_name']}, {ds['semitones']} semitones)")
+        lines.append("")
 
     return "\n".join(lines)
 
 
-# ── Claude API Call ───────────────────────────────────────────────────────
+# ── Double Stop Detection ─────────────────────────────────────────────────
+
+def detect_double_stops(tracks: list[dict]) -> dict[str, list[dict]]:
+    """
+    Find simultaneous notes per track and calculate intervals.
+    Returns {track_name: [{bar, notes, interval_semitones, interval_name}]}
+    """
+    try:
+        from music21 import interval, pitch
+    except ImportError:
+        return {}
+
+    ppq = 480
+    result = {}
+
+    note_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+    def midi_to_pitch(midi_num):
+        octave = (midi_num // 12) - 1
+        name = note_names[midi_num % 12]
+        return pitch.Pitch(f"{name}{octave}")
+
+    for track in tracks:
+        notes = track["notes"]
+        if not notes:
+            continue
+
+        tempo = track.get("tempo", 120)
+        time_sig = track.get("time_sig", "4/4")
+        beats_per_bar = int(time_sig.split("/")[0]) if "/" in time_sig else 4
+        ticks_per_bar = ppq * beats_per_bar
+
+        double_stops = []
+
+        # Find overlapping notes
+        for i, n1 in enumerate(notes):
+            n1_end = n1["position"] + n1["length"]
+            for n2 in notes[i+1:]:
+                if n2["position"] >= n1_end:
+                    break
+                if n2["position"] >= n1["position"]:
+                    # Simultaneous — calculate interval
+                    try:
+                        p1 = midi_to_pitch(min(n1["pitch"], n2["pitch"]))
+                        p2 = midi_to_pitch(max(n1["pitch"], n2["pitch"]))
+                        iv = interval.Interval(noteStart=p1, noteEnd=p2)
+                        semitones = abs(n1["pitch"] - n2["pitch"])
+                        bar = int(n1["position"] // ticks_per_bar) + 1
+                        double_stops.append({
+                            "bar": bar,
+                            "lower": n1["pitch"],
+                            "upper": n2["pitch"],
+                            "semitones": semitones,
+                            "interval_name": iv.niceName,
+                            "lower_name": note_names[min(n1["pitch"], n2["pitch"]) % 12],
+                            "upper_name": note_names[max(n1["pitch"], n2["pitch"]) % 12],
+                        })
+                    except Exception:
+                        continue
+
+        if double_stops:
+            result[track["name"]] = double_stops
+
+    return result
+
 
 def analyse_with_claude(passage_text: str, cue_name: str) -> dict:
     """Send passage to Claude API, return parsed JSON response."""
     if not ANTHROPIC_API_KEY:
+        # Test mode — mock response showing the pipeline works
+        track_lines = [l.strip() for l in passage_text.split('\n') if l.startswith('##')]
+        track_names = [l.replace('## ', '').split(' (')[0] for l in track_lines]
+        
+        # Count double stops mentioned
+        ds_lines = [l for l in passage_text.split('\n') if 'Double stops' in l or 'Bar' in l and '+' in l]
+        
+        checks = []
+        for name in track_names[:3]:  # show first 3 tracks
+            checks.append({
+                "track": name,
+                "severity": "ok",
+                "bar": None,
+                "issue": "TEST MODE — pipeline working, no API key set",
+                "suggestion": "Set ANTHROPIC_API_KEY to enable real analysis"
+            })
+        
         return {
-            "status": "error",
-            "checks": [],
-            "summary": "ANTHROPIC_API_KEY not set. Export it before running."
+            "status": "warning",
+            "checks": checks,
+            "summary": f"TEST MODE: Found {len(track_names)} active track(s). Set ANTHROPIC_API_KEY for real analysis."
         }
 
     try:
@@ -154,7 +245,6 @@ def analyse_with_claude(passage_text: str, cue_name: str) -> dict:
         )
 
         text = message.content[0].text.strip()
-        # Strip markdown code fences if present
         text = re.sub(r"^```(?:json)?\n?", "", text)
         text = re.sub(r"\n?```$", "", text)
         return json.loads(text)
