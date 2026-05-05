@@ -267,9 +267,11 @@ def run_analysis(cpr_path: Path):
     state["checks"] = []
     state["summary"] = ""
     state["error"] = ""
+    print(f"[parsing] {cpr_path.name} ({cpr_path.stat().st_size // 1024 // 1024}MB)...")
 
     try:
         tracks = extract_midi_tracks(cpr_path)
+        print(f"[parsed] found {len(tracks)} active MIDI track(s)")
         if not tracks:
             state["status"] = "ok"
             state["summary"] = f"No active MIDI tracks in {cue_name}."
@@ -281,11 +283,13 @@ def run_analysis(cpr_path: Path):
         state["status"] = result.get("status", "ok")
         state["checks"] = result.get("checks", [])
         state["summary"] = result.get("summary", "")
+        print(f"[done] status={state['status']}")
 
     except Exception as e:
         state["status"] = "error"
         state["error"] = str(e)
         state["summary"] = f"Analysis failed: {e}"
+        print(f"[error] {e}")
 
 
 # ── File Watcher ──────────────────────────────────────────────────────────
