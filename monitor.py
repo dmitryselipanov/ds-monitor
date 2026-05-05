@@ -68,7 +68,7 @@ state = {
 def extract_midi_tracks(cpr_path: Path) -> list[dict]:
     """
     Fast binary scan for Instrument tracks.
-    Finds track names as readable ASCII strings near note records.
+    Track names appear 430-2000 bytes before their note records in CPR.
     """
     data = cpr_path.read_bytes()
     print(f"  [read] {len(data)//1024//1024}MB loaded")
@@ -96,7 +96,7 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
         except:
             pass
 
-    # Internal names to skip
+    # Known internal names to skip
     SKIP = {
         'OldOn','RuntimeID','Volume','Value','AnchorValue','Output','Panner',
         'Default SurroundPan UID V2','GUID','Default SurroundPan UID',
@@ -112,10 +112,12 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
         'VffO','Name','String','Data','Flags','Color','ID','UID','List','Obj',
         'Container','Domain','Class','Func','Param','Track','Part','Event',
         'Plugin','Preset','Bank','Program','Channel','Port','Tempo','Note',
-        'Pitch','Velocity','Length','Position','Start','End','OldOn',
+        'Pitch','Velocity','Length','Position','Start','End','adcn','Iadcn',
+        'MMidiPart','SummingMode','Automation','OldOn','RuntimeID',
+        'Audio Output Count','Audio Input Count','inputBusName','outputBusName',
     }
 
-    # Find all note records
+    # Find note records
     adcn_matches = list(re.finditer(rb'adcn\x00\x01(.{8})', data, re.DOTALL))
     print(f"  [scan] found {len(adcn_matches)} note records")
     if not adcn_matches:
@@ -124,31 +126,8 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
     cap7_set = {m.group(1)[7] for m in adcn_matches}
     use_block24 = cap7_set == {0}
 
-    # Build track name position map:
-    # Look for readable ASCII strings (4-50 chars, spaces allowed, mixed case)
-    # that look like instrument names
-    name_positions = []
-    for m in re.finditer(rb'[\x20-\x7e]{4,50}', data):
-        s = m.group(0).decode('ascii', errors='ignore').strip()
-        if not s or s in SKIP:
-            continue
-        # Must contain at least one letter
-        if not re.search(r'[a-zA-Z]', s):
-            continue
-        # Skip pure internal patterns (all caps, GUIDs, etc)
-        if re.match(r'^\$[0-9A-F]+$', s):
-            continue
-        # Skip strings that look like GUIDs or hex
-        if len(s) > 30 and re.match(r'^[0-9A-F\-]+$', s):
-            continue
-        name_positions.append((m.start(), s))
-
-    print(f"  [names] found {len(name_positions)} candidate names")
-
-    import bisect
-    name_pos_arr = [p for p,n in name_positions]
-    name_arr = [n for p,n in name_positions]
-
+    # For each note, search the window 430-5000 bytes BEFORE it for a track name
+    # (Track name precedes the MMidiPart structure which is ~430 bytes before notes)
     tracks_dict = {}
 
     for nm in adcn_matches:
@@ -166,29 +145,34 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
             if not (0 < note_length < 1000000):
                 continue
 
-            # Find nearest preceding candidate name within 600KB
-            idx = bisect.bisect_right(name_pos_arr, nm.start()) - 1
-            if idx < 0:
+            # Search window: 430 to 5000 bytes before this note
+            win_start = max(0, nm.start() - 5000)
+            win_end = max(0, nm.start() - 430)
+            if win_end <= win_start:
                 continue
-            # Walk back to find a name that's within 600KB and not too close
-            track_name = None
-            for i in range(idx, max(-1, idx-50), -1):
-                dist = nm.start() - name_pos_arr[i]
-                if dist > 600000:
-                    break
-                candidate = name_arr[i]
-                # Skip very short or internal-looking names
-                if len(candidate) < 4:
-                    continue
-                if candidate in SKIP:
-                    continue
-                # Prefer names that look like instrument tracks
-                # (contain spaces or mixed case, not all-caps short words)
-                track_name = candidate
-                break
+            chunk = data[win_start:win_end]
 
-            if not track_name:
+            # Find all candidate strings in this window
+            candidates = []
+            for m in re.finditer(rb'[\x20-\x7e]{4,60}', chunk):
+                s = m.group(0).decode('ascii', errors='ignore').strip()
+                if not s or s in SKIP:
+                    continue
+                if not re.search(r'[a-zA-Z]', s):
+                    continue
+                # Skip GUIDs and hex strings
+                if re.match(r'^\$[0-9A-Fa-f]+$', s):
+                    continue
+                # Skip strings that are all-caps single words (internal fields)
+                if re.match(r'^[A-Z][a-z]+[A-Z]', s) and ' ' not in s:
+                    continue
+                candidates.append((win_start + m.start(), s))
+
+            if not candidates:
                 continue
+
+            # Take the LAST candidate (closest before the 430-byte boundary)
+            track_name = candidates[-1][1]
 
             if track_name not in tracks_dict:
                 tracks_dict[track_name] = {
