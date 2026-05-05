@@ -106,30 +106,21 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
     use_block24 = cap7_set == {0}
 
     # Build track name position map using IDString field pattern
-    # Format: IDString\x00\x00\x08<null-terminated-name>
-    idstring_pattern = rb'IDString\x00\x00\x08([\x20-\x7e]{2,60})\x00'
+    # Format: IDString\x00\x00\x08<8-byte-BE-length><name_bytes>
     name_positions = []
-    for m in re.finditer(idstring_pattern, data):
-        name = m.group(1).decode('ascii', errors='ignore').strip()
-        if name and len(name) >= 2:
-            name_positions.append((m.start(), name))
+    for m in re.finditer(rb'IDString\x00\x00\x08', data):
+        pos = m.end()
+        try:
+            length = struct.unpack_from('>q', data, pos)[0]
+            if 2 <= length <= 80:
+                name_bytes = data[pos+8:pos+8+length]
+                name = name_bytes.decode('utf-8', errors='ignore').strip().rstrip('\x00')
+                if name and len(name) >= 2:
+                    name_positions.append((m.start(), name))
+        except:
+            continue
     
     print(f"  [IDString names] {len(name_positions)} found: {[n for _,n in name_positions[:20]]}")
-
-    # If IDString gives no results, fall back to MidiPart-embedded name search
-    if not name_positions:
-        # Look for track name just before MMidiPartEvent (within 600-1500 bytes)
-        for m in re.finditer(rb'MMidiPartEvent', data):
-            search_start = max(0, m.start() - 1500)
-            search_end = max(0, m.start() - 600)
-            chunk = data[search_start:search_end]
-            strings = re.findall(rb'[a-zA-Z][a-zA-Z0-9 _\-\.]{3,50}', chunk)
-            for s in reversed(strings):
-                name = s.decode('ascii', errors='ignore').strip()
-                if name and re.match(r'^[a-zA-Z][a-zA-Z0-9 _\-\.]+$', name):
-                    name_positions.append((search_start, name))
-                    break
-        print(f"  [MMidiPart fallback] {len(name_positions)} names found")
 
     if not name_positions:
         return []
