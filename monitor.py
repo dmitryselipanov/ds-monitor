@@ -294,21 +294,27 @@ class CprHandler(FileSystemEventHandler):
     def __init__(self):
         self._debounce_timers = {}
 
-    def on_modified(self, event):
-        if event.is_directory:
-            return
-        path = Path(event.src_path)
+    def _handle(self, path_str):
+        path = Path(path_str)
         if path.suffix.lower() != ".cpr":
             return
-        # Ignore Cubase backup copies (filename ends with -01, -02 etc before extension)
         if re.search(r'-\d{2}$', path.stem):
+            print(f"[skip] backup: {path.name}")
             return
-        # Debounce: wait 2s after last modification before analysing
+        print(f"[detected] {path.name}")
         if path in self._debounce_timers:
             self._debounce_timers[path].cancel()
         timer = threading.Timer(2.0, lambda: run_analysis(path))
         self._debounce_timers[path] = timer
         timer.start()
+
+    def on_modified(self, event):
+        if not event.is_directory:
+            self._handle(event.src_path)
+
+    def on_created(self, event):
+        if not event.is_directory:
+            self._handle(event.src_path)
 
 
 # ── Local HTTP Server (floating window) ───────────────────────────────────
