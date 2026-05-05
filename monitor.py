@@ -181,31 +181,19 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
 
     result = []
     for t in tracks_dict.values():
-        t['notes'] = sorted(set(
-            (n['pitch'], n['position'], n['velocity']) for n in t['notes']
-        ), key=lambda x: x[1])
-        # Convert back to note dicts (deduplicated)
+        # Deduplicate notes by pitch+position
         seen = set()
         deduped = []
-        for n in sorted(t['notes_raw'] if 'notes_raw' in t else [], key=lambda n: n['position']):
-            key = (n['pitch'], round(n['position'], 1))
-            if key not in seen:
-                seen.add(key)
-                deduped.append(n)
-        t['notes'] = sorted(tracks_dict[t['name']]['notes'], key=lambda n: n['position'])
-        result.append(t)
-
-    # Deduplicate notes per track properly
-    for t in result:
-        seen = set()
-        deduped = []
-        for n in t['notes']:
+        for n in sorted(t['notes'], key=lambda n: n['position']):
             key = (n['pitch'], round(n['position'], 1))
             if key not in seen:
                 seen.add(key)
                 deduped.append(n)
         t['notes'] = deduped
+        result.append(t)
 
+    # Only return tracks that have notes
+    result = [t for t in result if t['notes']]
     print(f"  [tracks] {[(t['name'], len(t['notes'])) for t in result[:10]]}")
     return result
 
