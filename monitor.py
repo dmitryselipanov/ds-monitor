@@ -68,7 +68,7 @@ state = {
 def extract_midi_tracks(cpr_path: Path) -> list[dict]:
     """
     Fast binary scan for Instrument tracks.
-    Pre-maps all track names by position, then assigns notes to nearest track.
+    Finds track names as readable ASCII strings near note records.
     """
     data = cpr_path.read_bytes()
     print(f"  [read] {len(data)//1024//1024}MB loaded")
@@ -96,49 +96,59 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
         except:
             pass
 
-    SKIP_NAMES = {
-        'Version', 'CmArray', 'hasVSTi', 'Type', 'Name', 'String', 'Data',
-        'Value', 'Flags', 'Color', 'ID', 'UID', 'List', 'Obj', 'Container',
-        'Domain', 'Class', 'Func', 'Param', 'Track', 'Part', 'Event',
-        'Plugin', 'Preset', 'Bank', 'Program', 'Channel', 'Port', 'Tempo',
-        'Note', 'Pitch', 'Velocity', 'Length', 'Position', 'Start', 'End',
+    # Internal names to skip
+    SKIP = {
+        'OldOn','RuntimeID','Volume','Value','AnchorValue','Output','Panner',
+        'Default SurroundPan UID V2','GUID','Default SurroundPan UID',
+        'PannerType','Default DownmixPan UID','Plugin UID','Plugin Name',
+        'Standard Panner','Audio Input Count','Audio Input Arrangement','Type',
+        'Audio Output Count','Audio Output Arrangement','Event Input Count',
+        'Event Output Count','audioComponent','editController','Version',
+        'Editor Size Count','Active','IDString','BypassTag','SummingMode',
+        'outputBusEnable','InputBusArrangementType','Automation','AM,F',
+        'MMidiPartEvent','MPartNode','MMidiPart','MMidiEvent','MMidiNote',
+        'MMidiPolyPressure','MMidiAfterTouch','MMidiProgramChange',
+        'MMidiController','MMidiPitchBend','MMidiSysex','GLFX','Pler','TDRH',
+        'VffO','Name','String','Data','Flags','Color','ID','UID','List','Obj',
+        'Container','Domain','Class','Func','Param','Track','Part','Event',
+        'Plugin','Preset','Bank','Program','Channel','Port','Tempo','Note',
+        'Pitch','Velocity','Length','Position','Start','End','OldOn',
     }
 
-    # Step 1: Build position map of all track names using BOM marker
-    # Track names in CPR: <length_byte><name_bytes><BOM>
-    BOM = b'\xef\xbb\xbf'
-    name_positions = []  # list of (position, name)
-    for m in re.finditer(re.escape(BOM), data):
-        pos = m.start()
-        # Look back up to 60 bytes for the name
-        chunk = data[max(0, pos-60):pos]
-        nm = re.search(rb'[\x20-\x7e]{3,50}$', chunk)
-        if nm:
-            name = nm.group(0).decode('utf-8', errors='ignore').strip()
-            if name and name not in SKIP_NAMES and len(name) >= 3:
-                name_positions.append((pos, name))
-
-    print(f"  [names] found {len(name_positions)} named positions")
-    if not name_positions:
-        return []
-
-    # Sort by position for binary search
-    name_positions.sort(key=lambda x: x[0])
-    name_pos_arr = [p for p,n in name_positions]
-    name_arr = [n for p,n in name_positions]
-
-    # Step 2: Find all note records
+    # Find all note records
     adcn_matches = list(re.finditer(rb'adcn\x00\x01(.{8})', data, re.DOTALL))
     print(f"  [scan] found {len(adcn_matches)} note records")
     if not adcn_matches:
         return []
 
-    # Determine pitch location
     cap7_set = {m.group(1)[7] for m in adcn_matches}
     use_block24 = cap7_set == {0}
 
-    # Step 3: Assign each note to nearest preceding track name
+    # Build track name position map:
+    # Look for readable ASCII strings (4-50 chars, spaces allowed, mixed case)
+    # that look like instrument names
+    name_positions = []
+    for m in re.finditer(rb'[\x20-\x7e]{4,50}', data):
+        s = m.group(0).decode('ascii', errors='ignore').strip()
+        if not s or s in SKIP:
+            continue
+        # Must contain at least one letter
+        if not re.search(r'[a-zA-Z]', s):
+            continue
+        # Skip pure internal patterns (all caps, GUIDs, etc)
+        if re.match(r'^\$[0-9A-F]+$', s):
+            continue
+        # Skip strings that look like GUIDs or hex
+        if len(s) > 30 and re.match(r'^[0-9A-F\-]+$', s):
+            continue
+        name_positions.append((m.start(), s))
+
+    print(f"  [names] found {len(name_positions)} candidate names")
+
     import bisect
+    name_pos_arr = [p for p,n in name_positions]
+    name_arr = [n for p,n in name_positions]
+
     tracks_dict = {}
 
     for nm in adcn_matches:
@@ -156,11 +166,29 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
             if not (0 < note_length < 1000000):
                 continue
 
-            # Find nearest preceding name
+            # Find nearest preceding candidate name within 600KB
             idx = bisect.bisect_right(name_pos_arr, nm.start()) - 1
             if idx < 0:
                 continue
-            track_name = name_arr[idx]
+            # Walk back to find a name that's within 600KB and not too close
+            track_name = None
+            for i in range(idx, max(-1, idx-50), -1):
+                dist = nm.start() - name_pos_arr[i]
+                if dist > 600000:
+                    break
+                candidate = name_arr[i]
+                # Skip very short or internal-looking names
+                if len(candidate) < 4:
+                    continue
+                if candidate in SKIP:
+                    continue
+                # Prefer names that look like instrument tracks
+                # (contain spaces or mixed case, not all-caps short words)
+                track_name = candidate
+                break
+
+            if not track_name:
+                continue
 
             if track_name not in tracks_dict:
                 tracks_dict[track_name] = {
