@@ -67,8 +67,9 @@ state = {
 
 def extract_midi_tracks(cpr_path: Path) -> list[dict]:
     """
-    Fast binary scan using IDString track name pattern.
-    IDString\x00\x00\x08<name>\x00 is the reliable track name field in CPR.
+    CPR parser using exact track name prefix pattern discovered via binary analysis.
+    Pattern: \x00\x00\x00\x00\x00\x00\x00\x00\x80\x00\x00\xbf + 8 bytes + name + \x00\xef\xbb\xbf
+    Notes live within 500KB of their track name position.
     """
     data = cpr_path.read_bytes()
     print(f"  [read] {len(data)//1024//1024}MB loaded")
@@ -96,85 +97,116 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
         except:
             pass
 
-    # Find note records
+    # Find track names using exact prefix pattern
+    PREFIX = b'\x00\x00\x00\x00\x00\x00\x00\x00\x80\x00\x00\xbf'
+    BOM = b'\x00\xef\xbb\xbf'
+    pattern = re.escape(PREFIX) + rb'.{8}([\x21-\x7e][\x20-\x7e]{1,58}?)' + re.escape(BOM)
+    
+    name_positions = []
+    for m in re.finditer(pattern, data, re.DOTALL):
+        name = m.group(1).decode('ascii', errors='ignore').strip()
+        # Must look like an instrument name
+        if (name and len(name) >= 2 and 
+            re.match(r'^[A-Za-z]', name) and
+            not re.match(r'^[A-Z][a-z]+[A-Z]', name)):  # skip camelCase internal names
+            name_positions.append((m.start(), name))
+
+    print(f"  [names] found {len(name_positions)} track names")
+
+    if not name_positions:
+        return []
+
+    # Find all note records
     adcn_matches = list(re.finditer(rb'adcn\x00\x01(.{8})', data, re.DOTALL))
-    print(f"  [scan] found {len(adcn_matches)} note records")
+    print(f"  [notes] found {len(adcn_matches)} total note records")
     if not adcn_matches:
         return []
 
     cap7_set = {m.group(1)[7] for m in adcn_matches}
     use_block24 = cap7_set == {0}
 
-    # Build track name position map using IDString field pattern
-    # Format: IDString\x00\x00\x08<8-byte-BE-length><name_bytes>
-    name_positions = []
-    for m in re.finditer(rb'IDString\x00\x00\x08', data):
-        pos = m.end()
-        try:
-            length = struct.unpack_from('>q', data, pos)[0]
-            if 2 <= length <= 80:
-                name_bytes = data[pos+8:pos+8+length]
-                name = name_bytes.decode('utf-8', errors='ignore').strip().rstrip('\x00')
-                if name and len(name) >= 2:
-                    name_positions.append((m.start(), name))
-        except:
-            continue
-    
-    print(f"  [IDString names] {len(name_positions)} found: {[n for _,n in name_positions[:20]]}")
-
-    if not name_positions:
-        return []
-
+    # Build note position list for fast lookup
     import bisect
-    name_pos_arr = [p for p,n in name_positions]
-    name_arr = [n for p,n in name_positions]
+    note_positions = [m.start() for m in adcn_matches]
 
+    # For each track name, collect notes within 500KB window
+    WINDOW = 500000
     tracks_dict = {}
 
-    for nm in adcn_matches:
-        captured = nm.group(1)
-        block = data[nm.end():nm.end()+37]
-        if len(block) < 37:
-            continue
-        try:
-            pitch = block[24] if use_block24 else captured[7]
-            note_length = struct.unpack_from(">d", block, 0)[0]
-            note_pos = struct.unpack_from(">d", block, 26)[0]
-            on_vel = block[35]
-            if not (0 < pitch <= 127 and 0 < on_vel <= 127):
+    for name_pos, name in name_positions:
+        win_start = max(0, name_pos - WINDOW)
+        win_end = min(len(data), name_pos + WINDOW)
+        
+        # Find note indices in this window
+        lo = bisect.bisect_left(note_positions, win_start)
+        hi = bisect.bisect_right(note_positions, win_end)
+        
+        notes = []
+        for i in range(lo, hi):
+            nm = adcn_matches[i]
+            captured = nm.group(1)
+            block = data[nm.end():nm.end()+37]
+            if len(block) < 37:
                 continue
-            if not (0 < note_length < 1000000):
+            try:
+                pitch = block[24] if use_block24 else captured[7]
+                note_length = struct.unpack_from(">d", block, 0)[0]
+                note_pos = struct.unpack_from(">d", block, 26)[0]
+                on_vel = block[35]
+                if not (0 < pitch <= 127 and 0 < on_vel <= 127):
+                    continue
+                if not (0 < note_length < 1000000):
+                    continue
+                notes.append({
+                    'pitch': pitch,
+                    'position': round(note_pos, 2),
+                    'length': round(note_length, 2),
+                    'velocity': on_vel,
+                })
+            except (struct.error, IndexError):
                 continue
 
-            # Nearest preceding IDString name
-            idx = bisect.bisect_right(name_pos_arr, nm.start()) - 1
-            if idx < 0:
-                continue
-            track_name = name_arr[idx]
-
-            if track_name not in tracks_dict:
-                tracks_dict[track_name] = {
-                    'name': track_name,
+        if notes:
+            # If name already exists, merge (same track may match multiple prefix occurrences)
+            if name in tracks_dict:
+                tracks_dict[name]['notes'].extend(notes)
+            else:
+                tracks_dict[name] = {
+                    'name': name,
                     'track_type': 'Instrument',
-                    'notes': [],
+                    'notes': notes,
                     'tempo': tempo,
                     'time_sig': time_sig,
                 }
-            tracks_dict[track_name]['notes'].append({
-                'pitch': pitch,
-                'position': round(note_pos, 2),
-                'length': round(note_length, 2),
-                'velocity': on_vel,
-            })
-        except (struct.error, IndexError):
-            continue
 
     result = []
     for t in tracks_dict.values():
-        t['notes'] = sorted(t['notes'], key=lambda n: n['position'])
+        t['notes'] = sorted(set(
+            (n['pitch'], n['position'], n['velocity']) for n in t['notes']
+        ), key=lambda x: x[1])
+        # Convert back to note dicts (deduplicated)
+        seen = set()
+        deduped = []
+        for n in sorted(t['notes_raw'] if 'notes_raw' in t else [], key=lambda n: n['position']):
+            key = (n['pitch'], round(n['position'], 1))
+            if key not in seen:
+                seen.add(key)
+                deduped.append(n)
+        t['notes'] = sorted(tracks_dict[t['name']]['notes'], key=lambda n: n['position'])
         result.append(t)
 
-    print(f"  [tracks] {[t['name'] for t in result[:15]]}")
+    # Deduplicate notes per track properly
+    for t in result:
+        seen = set()
+        deduped = []
+        for n in t['notes']:
+            key = (n['pitch'], round(n['position'], 1))
+            if key not in seen:
+                seen.add(key)
+                deduped.append(n)
+        t['notes'] = deduped
+
+    print(f"  [tracks] {[(t['name'], len(t['notes'])) for t in result[:10]]}")
     return result
 
 
