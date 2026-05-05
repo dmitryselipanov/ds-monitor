@@ -40,8 +40,8 @@ state = {
 
 def extract_midi_tracks(cpr_path: Path) -> list[dict]:
     """
-    Fast binary scan for Instrument/MIDI tracks with content.
-    Uses verified adcn\x00\x01 record layout from CubaseTools.
+    Fast binary scan for Instrument tracks.
+    Pre-maps all track names by position, then assigns notes to nearest track.
     """
     data = cpr_path.read_bytes()
     print(f"  [read] {len(data)//1024//1024}MB loaded")
@@ -69,7 +69,38 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
         except:
             pass
 
-    # Find all adcn\x00\x01 note records
+    SKIP_NAMES = {
+        'Version', 'CmArray', 'hasVSTi', 'Type', 'Name', 'String', 'Data',
+        'Value', 'Flags', 'Color', 'ID', 'UID', 'List', 'Obj', 'Container',
+        'Domain', 'Class', 'Func', 'Param', 'Track', 'Part', 'Event',
+        'Plugin', 'Preset', 'Bank', 'Program', 'Channel', 'Port', 'Tempo',
+        'Note', 'Pitch', 'Velocity', 'Length', 'Position', 'Start', 'End',
+    }
+
+    # Step 1: Build position map of all track names using BOM marker
+    # Track names in CPR: <length_byte><name_bytes><BOM>
+    BOM = b'\xef\xbb\xbf'
+    name_positions = []  # list of (position, name)
+    for m in re.finditer(re.escape(BOM), data):
+        pos = m.start()
+        # Look back up to 60 bytes for the name
+        chunk = data[max(0, pos-60):pos]
+        nm = re.search(rb'[\x20-\x7e]{3,50}$', chunk)
+        if nm:
+            name = nm.group(0).decode('utf-8', errors='ignore').strip()
+            if name and name not in SKIP_NAMES and len(name) >= 3:
+                name_positions.append((pos, name))
+
+    print(f"  [names] found {len(name_positions)} named positions")
+    if not name_positions:
+        return []
+
+    # Sort by position for binary search
+    name_positions.sort(key=lambda x: x[0])
+    name_pos_arr = [p for p,n in name_positions]
+    name_arr = [n for p,n in name_positions]
+
+    # Step 2: Find all note records
     adcn_matches = list(re.finditer(rb'adcn\x00\x01(.{8})', data, re.DOTALL))
     print(f"  [scan] found {len(adcn_matches)} note records")
     if not adcn_matches:
@@ -79,14 +110,8 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
     cap7_set = {m.group(1)[7] for m in adcn_matches}
     use_block24 = cap7_set == {0}
 
-    BOM = b'\xef\xbb\xbf'
-    SKIP_NAMES = {
-        'Version', 'CmArray', 'hasVSTi', 'Type', 'Name', 'String', 'Data',
-        'Value', 'Flags', 'Color', 'ID', 'UID', 'List', 'Obj', 'Container',
-        'Domain', 'Class', 'Func', 'Param', 'Track', 'Part', 'Event',
-        'Plugin', 'Preset', 'Bank', 'Program', 'Channel', 'Port', 'Tempo',
-    }
-
+    # Step 3: Assign each note to nearest preceding track name
+    import bisect
     tracks_dict = {}
 
     for nm in adcn_matches:
@@ -104,19 +129,11 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
             if not (0 < note_length < 1000000):
                 continue
 
-            # Find nearest track name via BOM marker
-            search_start = max(0, nm.start() - 500000)
-            chunk = data[search_start:nm.start()]
-            bom_pos = chunk.rfind(BOM)
-            track_name = None
-            if bom_pos > 4:
-                name_bytes = chunk[max(0,bom_pos-60):bom_pos]
-                name_match = re.search(rb'[\x20-\x7e]{3,50}$', name_bytes)
-                if name_match:
-                    track_name = name_match.group(0).decode('utf-8', errors='ignore').strip()
-
-            if not track_name or track_name in SKIP_NAMES or len(track_name) < 3:
+            # Find nearest preceding name
+            idx = bisect.bisect_right(name_pos_arr, nm.start()) - 1
+            if idx < 0:
                 continue
+            track_name = name_arr[idx]
 
             if track_name not in tracks_dict:
                 tracks_dict[track_name] = {
@@ -140,7 +157,7 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
         t['notes'] = sorted(t['notes'], key=lambda n: n['position'])
         result.append(t)
 
-    print(f"  [tracks] {[t['name'] for t in result]}")
+    print(f"  [tracks] {[t['name'] for t in result[:10]]}")
     return result
 
 
