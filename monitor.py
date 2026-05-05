@@ -40,38 +40,106 @@ state = {
 
 def extract_midi_tracks(cpr_path: Path) -> list[dict]:
     """
-    Parse CPR binary, extract only tracks that have MIDI content.
-    Returns list of {name, track_type, notes: [{pitch, position, length, velocity}], tempo, time_sig}
+    Fast binary scan for MIDI tracks with content.
+    Only reads relevant byte patterns, skips full file parse.
     """
-    try:
-        from cubasetools.core.cpr_parser import parse_cpr
-        project = parse_cpr(cpr_path)
-    except Exception as e:
-        raise RuntimeError(f"CPR parse failed: {e}")
+    data = cpr_path.read_bytes()
+    
+    # Extract tempo
+    tempo = 120.0
+    bpm_match = re.search(rb'BPM\x00\x00\x04(.{8})', data)
+    if bpm_match:
+        try:
+            tempo = struct.unpack('>d', bpm_match.group(1))[0]
+            if not (20 < tempo < 300):
+                tempo = 120.0
+        except:
+            pass
 
-    active_tracks = []
-    for track in project.tracks:
-        if not track.midi_parts:
-            continue
+    # Extract time signature
+    time_sig = "4/4"
+    ts_match = re.search(rb'Numerator\x00\x00\x01(.{8}).*?Denominator\x00\x00\x01(.{8})', data, re.DOTALL)
+    if ts_match:
+        try:
+            num = struct.unpack('>q', ts_match.group(1))[0]
+            den = struct.unpack('>q', ts_match.group(2))[0]
+            if 1 <= num <= 16 and den in [2,4,8,16]:
+                time_sig = f"{num}/{den}"
+        except:
+            pass
+
+    # Find track names using IDString pattern
+    # Pattern: track has a name string followed by MIDI note data (adcn records)
+    track_pattern = rb'\x00\x00\x08([^\x00]{2,40})\x00'
+    note_pattern = rb'adcn'
+    
+    # Find all MIDI part markers
+    midi_parts = []
+    for m in re.finditer(rb'adcn(.{28})', data):
+        pos = m.start()
+        # Look back up to 200KB for a track name
+        search_start = max(0, pos - 200000)
+        chunk = data[search_start:pos]
+        # Find last track name in this chunk
+        names = list(re.finditer(rb'\x00\x00\x08([\x20-\x7e]{2,40})\x00', chunk))
+        if names:
+            raw_name = names[-1].group(1).decode('utf-8', errors='ignore').strip()
+            if raw_name and not raw_name.startswith('_'):
+                midi_parts.append({'name': raw_name, 'pos': pos})
+
+    if not midi_parts:
+        return []
+
+    # Group by track name, extract notes
+    tracks_dict = {}
+    ppq = 480
+
+    for part in midi_parts:
+        name = part['name']
+        pos = part['pos']
+        # Read note data: adcn + 28 bytes header, then note records
+        # Each note: pitch(1B) + flags(1B) + position(4B BE) + velocity(1B) + length(4B BE)
+        chunk = data[pos+4:pos+4+28+1000]  # read up to ~85 notes per part
         notes = []
-        for part in track.midi_parts:
-            for note in part.notes:
-                notes.append({
-                    "pitch": note.pitch,
-                    "position": note.position,
-                    "length": note.length,
-                    "velocity": note.velocity,
-                })
+        i = 28  # skip header
+        while i + 10 <= len(chunk):
+            try:
+                pitch = chunk[i]
+                if not (0 <= pitch <= 127):
+                    i += 1
+                    continue
+                position = struct.unpack('>I', chunk[i+2:i+6])[0]
+                velocity = chunk[i+6]
+                length = struct.unpack('>I', chunk[i+7:i+11])[0]
+                if 0 < velocity <= 127 and 0 < length < 10000000:
+                    notes.append({
+                        'pitch': pitch,
+                        'position': position,
+                        'velocity': velocity,
+                        'length': length,
+                    })
+                i += 11
+            except:
+                i += 1
+        
         if notes:
-            active_tracks.append({
-                "name": track.name,
-                "track_type": track.track_type.value,
-                "notes": sorted(notes, key=lambda n: n["position"]),
-                "tempo": project.tempo,
-                "time_sig": project.time_signature,
-            })
+            if name not in tracks_dict:
+                tracks_dict[name] = {
+                    'name': name,
+                    'track_type': 'MIDI',
+                    'notes': [],
+                    'tempo': tempo,
+                    'time_sig': time_sig,
+                }
+            tracks_dict[name]['notes'].extend(notes)
 
-    return active_tracks
+    # Sort notes by position per track
+    result = []
+    for t in tracks_dict.values():
+        t['notes'] = sorted(t['notes'], key=lambda n: n['position'])
+        result.append(t)
+
+    return result
 
 
 # ── music21 Passage Description ───────────────────────────────────────────
@@ -308,7 +376,7 @@ class CprHandler(FileSystemEventHandler):
         print(f"[detected] ({event_type}): {path.name}")
         if path in self._debounce_timers:
             self._debounce_timers[path].cancel()
-        timer = threading.Timer(2.0, lambda: run_analysis(path))
+        timer = threading.Timer(2.0, lambda p=path: threading.Thread(target=run_analysis, args=(p,), daemon=True).start())
         self._debounce_timers[path] = timer
         timer.start()
 
