@@ -129,55 +129,59 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
     import bisect
     note_positions = [m.start() for m in adcn_matches]
 
-    # For each track name, collect notes within 500KB window
-    WINDOW = 500000
+    # Voronoi assignment: each note goes to its nearest track name
+    # Build sorted list of name positions for bisect
+    sorted_name_positions = sorted(name_positions, key=lambda x: x[0])
+    spos = [p for p,n in sorted_name_positions]
+    snames = [n for p,n in sorted_name_positions]
+
     tracks_dict = {}
 
-    for name_pos, name in name_positions:
-        win_start = max(0, name_pos - WINDOW)
-        win_end = min(len(data), name_pos + WINDOW)
-        
-        # Find note indices in this window
-        lo = bisect.bisect_left(note_positions, win_start)
-        hi = bisect.bisect_right(note_positions, win_end)
-        
-        notes = []
-        for i in range(lo, hi):
-            nm = adcn_matches[i]
-            captured = nm.group(1)
-            block = data[nm.end():nm.end()+37]
-            if len(block) < 37:
+    for i, nm in enumerate(adcn_matches):
+        captured = nm.group(1)
+        block = data[nm.end():nm.end()+37]
+        if len(block) < 37:
+            continue
+        try:
+            pitch = block[24] if use_block24 else captured[7]
+            note_length = struct.unpack_from(">d", block, 0)[0]
+            note_pos_val = struct.unpack_from(">d", block, 26)[0]
+            on_vel = block[35]
+            if not (0 < pitch <= 127 and 0 < on_vel <= 127):
                 continue
-            try:
-                pitch = block[24] if use_block24 else captured[7]
-                note_length = struct.unpack_from(">d", block, 0)[0]
-                note_pos = struct.unpack_from(">d", block, 26)[0]
-                on_vel = block[35]
-                if not (0 < pitch <= 127 and 0 < on_vel <= 127):
-                    continue
-                if not (0 < note_length < 1000000):
-                    continue
-                notes.append({
-                    'pitch': pitch,
-                    'position': round(note_pos, 2),
-                    'length': round(note_length, 2),
-                    'velocity': on_vel,
-                })
-            except (struct.error, IndexError):
+            if not (0 < note_length < 1000000):
                 continue
 
-        if notes:
-            # If name already exists, merge (same track may match multiple prefix occurrences)
-            if name in tracks_dict:
-                tracks_dict[name]['notes'].extend(notes)
-            else:
-                tracks_dict[name] = {
-                    'name': name,
+            # Find nearest name (Voronoi)
+            idx = bisect.bisect_left(spos, nm.start())
+            best_name = None
+            best_dist = float('inf')
+            for j in [idx-1, idx]:
+                if 0 <= j < len(spos):
+                    dist = abs(nm.start() - spos[j])
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_name = snames[j]
+
+            if not best_name:
+                continue
+
+            if best_name not in tracks_dict:
+                tracks_dict[best_name] = {
+                    'name': best_name,
                     'track_type': 'Instrument',
-                    'notes': notes,
+                    'notes': [],
                     'tempo': tempo,
                     'time_sig': time_sig,
                 }
+            tracks_dict[best_name]['notes'].append({
+                'pitch': pitch,
+                'position': round(note_pos_val, 2),
+                'length': round(note_length, 2),
+                'velocity': on_vel,
+            })
+        except (struct.error, IndexError):
+            continue
 
     result = []
     for t in tracks_dict.values():
