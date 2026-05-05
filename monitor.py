@@ -294,14 +294,14 @@ class CprHandler(FileSystemEventHandler):
     def __init__(self):
         self._debounce_timers = {}
 
-    def _handle(self, path_str):
+    def _handle(self, path_str, event_type="?"):
         path = Path(path_str)
         if path.suffix.lower() != ".cpr":
             return
         if re.search(r'-\d{2}$', path.stem):
-            print(f"[skip] backup: {path.name}")
+            print(f"[skip] backup ({event_type}): {path.name}")
             return
-        print(f"[detected] {path.name}")
+        print(f"[detected] ({event_type}): {path.name}")
         if path in self._debounce_timers:
             self._debounce_timers[path].cancel()
         timer = threading.Timer(2.0, lambda: run_analysis(path))
@@ -310,15 +310,16 @@ class CprHandler(FileSystemEventHandler):
 
     def on_modified(self, event):
         if not event.is_directory:
-            self._handle(event.src_path)
+            self._handle(event.src_path, "modified")
 
     def on_created(self, event):
         if not event.is_directory:
-            self._handle(event.src_path)
+            self._handle(event.src_path, "created")
 
     def on_moved(self, event):
         if not event.is_directory:
-            self._handle(event.dest_path)
+            print(f"[moved] {Path(event.src_path).name} → {Path(event.dest_path).name}")
+            self._handle(event.dest_path, "moved")
 
 
 # ── Local HTTP Server (floating window) ───────────────────────────────────
