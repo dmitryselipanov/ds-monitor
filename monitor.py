@@ -32,6 +32,154 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SYSTEM_PROMPT_PATH = Path(__file__).parent / "orchestration_knowledge.md"
 PORT = 47291  # local server for floating window
 
+SB_URL = "https://ekfipctoizteywmqspcw.supabase.co"
+SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVrZmlwY3RvaXp0ZXl3bXFzcGN3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI4MjM1ODcsImV4cCI6MjA4ODM5OTU4N30.hFlhgzVvwnMrGep9gLroaT-iyiFK5raLQyuNW1rnXjA"
+
+# ── XML Parser ────────────────────────────────────────────────────────────
+
+def parse_cubase_xml(xml_path: Path) -> list[dict]:
+    """Parse Cubase marker XML, return list of cue dicts."""
+    try:
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+    except Exception as e:
+        print(f"  [xml error] {e}")
+        return []
+
+    # Find BPM and PPQ
+    bpm = 120.0
+    ppq = 480
+    for node in root.iter():
+        if node.get('name') == 'Tempo':
+            try: bpm = float(node.get('value', 120))
+            except: pass
+        if node.get('name') == 'Ticks':
+            try: ppq = int(node.get('value', 480))
+            except: pass
+
+    TC_SEPS = re.compile(r"['\u2019.:]")
+    DOT_TC = re.compile(r'(\d{2})[.\':]\d{2}[.\':]\d{2}[.\':]\d{2}$')
+
+    auto_num = [0]
+
+    def parse_marker(name, length_ticks):
+        name = name.strip()
+        tc_match = re.search(r"(\d{2}['\u2019.:]\d{2}['\u2019.:]\d{2}['\u2019.:]\d{2})$", name)
+        if tc_match:
+            tc_str = tc_match.group(1)
+            tc = re.sub(r"['\u2019.:]", ':', tc_str)
+            rest = name[:name.rfind(tc_match.group(1))].strip()
+            parts = rest.split()
+            cue_number = parts[0] if parts else ''
+            title = ' '.join(parts[1:]) if len(parts) > 1 else rest
+            # Remove version suffix
+            title = re.sub(r'\s+V\d+(\.\d+)*\s*$', '', title, flags=re.IGNORECASE).strip()
+            in_tc = tc
+            dur_secs = (length_ticks / ppq) * (60 / bpm) if length_ticks else 0
+            h,rem = divmod(int(dur_secs),3600)
+            m,s = divmod(rem,60)
+            duration = f"{h:02d}:{m:02d}:{s:02d}"
+            return dict(cue_number=cue_number, title=title or cue_number, in_tc=in_tc, out_tc=None, duration=duration, has_tc=True)
+        else:
+            auto_num[0] += 1
+            dur_secs = (length_ticks / ppq) * (60 / bpm) if length_ticks else 0
+            h,rem = divmod(int(dur_secs),3600)
+            m,s = divmod(rem,60)
+            duration = f"{h:02d}:{m:02d}:{s:02d}"
+            return dict(cue_number=str(auto_num[0]).zfill(2), title=name, in_tc=None, out_tc=None, duration=duration, has_tc=False)
+
+    cues = []
+    for marker in root.iter('Marker'):
+        name_node = marker.find(".//Name") or marker.find(".//string[@name='Name']")
+        length_node = marker.find(".//Length") or marker.find(".//float[@name='Length']")
+        name = (name_node.get('value','') if name_node is not None else
+                marker.get('name',''))
+        length_ticks = 0
+        try:
+            if length_node is not None:
+                length_ticks = float(length_node.get('value', 0))
+        except: pass
+        if name:
+            cue = parse_marker(name, length_ticks)
+            if cue:
+                cues.append(cue)
+
+    return cues
+
+
+def push_pending_imports(xml_path: Path, cues: list[dict]):
+    """Push parsed cues to Supabase pending_imports table."""
+    if not cues:
+        return
+    try:
+        import urllib.request
+        # Find matching project by path
+        project_id = None
+        xml_str = str(xml_path).replace('\\', '/')
+        # Try to match project by checking if dropbox_base_path or title appears in path
+        req = urllib.request.Request(
+            f"{SB_URL}/rest/v1/projects?select=id,title,dropbox_base_path",
+            headers={"apikey": SB_KEY, "Authorization": f"Bearer {SB_KEY}"}
+        )
+        with urllib.request.urlopen(req) as r:
+            projects = json.loads(r.read())
+
+        # Find best matching project
+        for p in projects:
+            title = (p.get('title') or '').lower()
+            if title and title in xml_str.lower():
+                project_id = p['id']
+                break
+
+        rows = []
+        for c in cues:
+            rows.append({
+                "project_id": project_id,
+                "raw_xml_path": str(xml_path),
+                "cue_number": c['cue_number'],
+                "title": c['title'],
+                "in_tc": c.get('in_tc'),
+                "out_tc": c.get('out_tc'),
+                "duration": c.get('duration'),
+                "has_tc": c.get('has_tc', True),
+                "status": "pending"
+            })
+
+        data = json.dumps(rows).encode()
+        req = urllib.request.Request(
+            f"{SB_URL}/rest/v1/pending_imports",
+            data=data,
+            method="POST",
+            headers={
+                "apikey": SB_KEY,
+                "Authorization": f"Bearer {SB_KEY}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal"
+            }
+        )
+        with urllib.request.urlopen(req) as r:
+            print(f"  [xml] pushed {len(rows)} cues to pending_imports (project_id={project_id})")
+    except Exception as e:
+        print(f"  [xml error] push failed: {e}")
+
+
+def handle_xml(xml_path: Path):
+    """Check if XML is a Cubase marker export and process it."""
+    # Must be adjacent to a CPR file (same folder)
+    folder = xml_path.parent
+    cprs = list(folder.glob("*.cpr"))
+    if not cprs:
+        print(f"  [xml skip] no CPR in same folder: {xml_path.name}")
+        return
+    print(f"  [xml detected] {xml_path.name}")
+    cues = parse_cubase_xml(xml_path)
+    if not cues:
+        print(f"  [xml] no cues parsed")
+        return
+    print(f"  [xml] parsed {len(cues)} cues: {[c['title'][:20] for c in cues[:5]]}")
+    push_pending_imports(xml_path, cues)
+
 def diagnose_cpr(cpr_path: Path):
     """Dump bytes around first note record to find track name pattern."""
     data = cpr_path.read_bytes()
@@ -448,15 +596,28 @@ class CprHandler(FileSystemEventHandler):
     def on_modified(self, event):
         if not event.is_directory:
             self._handle(event.src_path, "modified")
+            self._handle_xml(event.src_path)
 
     def on_created(self, event):
         if not event.is_directory:
             self._handle(event.src_path, "created")
+            self._handle_xml(event.src_path)
 
     def on_moved(self, event):
         if not event.is_directory:
             print(f"[moved] {Path(event.src_path).name} → {Path(event.dest_path).name}")
             self._handle(event.dest_path, "moved")
+            self._handle_xml(event.dest_path)
+
+    def _handle_xml(self, path_str):
+        path = Path(path_str)
+        if path.suffix.lower() != ".xml":
+            return
+        if path in self._debounce_timers:
+            self._debounce_timers[path].cancel()
+        timer = threading.Timer(2.0, lambda p=path: threading.Thread(target=handle_xml, args=(p,), daemon=True).start())
+        self._debounce_timers[path] = timer
+        timer.start()
 
 
 # ── Local HTTP Server (floating window) ───────────────────────────────────
