@@ -169,20 +169,69 @@ def push_pending_imports(xml_path: Path, cues: list[dict]):
 
 
 def handle_xml(xml_path: Path):
-    """Check if XML is a Cubase marker export and process it."""
-    # Must be adjacent to a CPR file (same folder)
+    """Push raw XML content to pending_imports for DS Scoring to parse."""
     folder = xml_path.parent
     cprs = list(folder.glob("*.cpr"))
     if not cprs:
         print(f"  [xml skip] no CPR in same folder: {xml_path.name}")
         return
     print(f"  [xml detected] {xml_path.name}")
-    cues = parse_cubase_xml(xml_path)
-    if not cues:
-        print(f"  [xml] no cues parsed")
+    try:
+        raw_xml = xml_path.read_text(encoding='utf-8', errors='ignore')
+    except Exception as e:
+        print(f"  [xml error] could not read file: {e}")
         return
-    print(f"  [xml] parsed {len(cues)} cues: {[c['title'][:20] for c in cues[:5]]}")
-    push_pending_imports(xml_path, cues)
+
+    try:
+        import urllib.request
+        # Find matching project
+        req = urllib.request.Request(
+            f"{SB_URL}/rest/v1/projects?select=id,title",
+            headers={"apikey": SB_KEY, "Authorization": f"Bearer {SB_KEY}"}
+        )
+        with urllib.request.urlopen(req) as r:
+            projects = json.loads(r.read())
+
+        project_id = None
+        parts = xml_path.parts
+        watch_parts = WATCH_DIR.parts
+        if len(parts) > len(watch_parts):
+            project_folder = parts[len(watch_parts)].lower()
+            for p in projects:
+                title = (p.get('title') or '').lower().strip()
+                if title and (title == project_folder or project_folder.startswith(title) or title.startswith(project_folder)):
+                    project_id = p['id']
+                    break
+            if not project_id:
+                for p in projects:
+                    title = (p.get('title') or '').lower().strip()
+                    if title and any(title in part.lower() for part in parts):
+                        project_id = p['id']
+                        break
+
+        row = {
+            "project_id": project_id,
+            "raw_xml_path": str(xml_path),
+            "raw_xml": raw_xml,
+            "title": xml_path.stem,
+            "status": "pending"
+        }
+        data = json.dumps(row).encode()
+        req = urllib.request.Request(
+            f"{SB_URL}/rest/v1/pending_imports",
+            data=data,
+            method="POST",
+            headers={
+                "apikey": SB_KEY,
+                "Authorization": f"Bearer {SB_KEY}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal"
+            }
+        )
+        with urllib.request.urlopen(req) as r:
+            print(f"  [xml] pushed raw XML to pending_imports (project_id={project_id})")
+    except Exception as e:
+        print(f"  [xml error] push failed: {e}")
 
 def diagnose_cpr(cpr_path: Path):
     """Dump bytes around first note record to find track name pattern."""
