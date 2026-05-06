@@ -114,23 +114,26 @@ def push_pending_imports(xml_path: Path, cues: list[dict]):
         return
     try:
         import urllib.request
-        # Find matching project by path
+        # Find matching project by walking up from XML to PROJECTS root
+        # Structure: PROJECTS/[ProjectFolder]/...subdirs.../file.xml
         project_id = None
-        xml_str = str(xml_path).replace('\\', '/')
-        # Try to match project by checking if dropbox_base_path or title appears in path
-        req = urllib.request.Request(
-            f"{SB_URL}/rest/v1/projects?select=id,title,dropbox_base_path",
-            headers={"apikey": SB_KEY, "Authorization": f"Bearer {SB_KEY}"}
-        )
-        with urllib.request.urlopen(req) as r:
-            projects = json.loads(r.read())
-
-        # Find best matching project
-        for p in projects:
-            title = (p.get('title') or '').lower()
-            if title and title in xml_str.lower():
-                project_id = p['id']
-                break
+        parts = xml_path.parts
+        watch_parts = WATCH_DIR.parts
+        # Find the folder immediately under WATCH_DIR
+        if len(parts) > len(watch_parts):
+            project_folder = parts[len(watch_parts)].lower()
+            for p in projects:
+                title = (p.get('title') or '').lower().strip()
+                if title and (title == project_folder or project_folder.startswith(title) or title.startswith(project_folder)):
+                    project_id = p['id']
+                    break
+            # Fallback: check if any part of the path contains the title
+            if not project_id:
+                for p in projects:
+                    title = (p.get('title') or '').lower().strip()
+                    if title and any(title in part.lower() for part in parts):
+                        project_id = p['id']
+                        break
 
         rows = []
         for c in cues:
