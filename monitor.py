@@ -30,7 +30,8 @@ from watchdog.events import FileSystemEventHandler
 WATCH_DIR = Path.home() / "Documents" / "projects"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SYSTEM_PROMPT_PATH = Path(__file__).parent / "orchestration_knowledge.md"
-PORT = 47291  # local server for floating window
+PORT = 47291
+AI_ENABLED = True  # toggle via menu bar
 
 SB_URL = "https://ekfipctoizteywmqspcw.supabase.co"
 SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVrZmlwY3RvaXp0ZXl3bXFzcGN3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI4MjM1ODcsImV4cCI6MjA4ODM5OTU4N30.hFlhgzVvwnMrGep9gLroaT-iyiFK5raLQyuNW1rnXjA"
@@ -489,6 +490,8 @@ def detect_double_stops(tracks: list[dict]) -> dict[str, list[dict]]:
 
 def analyse_with_claude(passage_text: str, cue_name: str) -> dict:
     """Send passage to Claude API, return parsed JSON response."""
+    if not AI_ENABLED:
+        return {"status": "ok", "checks": [], "summary": "AI analysis disabled."}
     if not ANTHROPIC_API_KEY:
         # Test mode — mock response showing the pipeline works
         track_lines = [l.strip() for l in passage_text.split('\n') if l.startswith('##')]
@@ -647,8 +650,15 @@ STATUS_COLORS = {
 class DSMonitorApp(rumps.App):
     def __init__(self):
         super().__init__("♩", quit_button=None)
-        self.menu = ["Idle — waiting for save", None, rumps.MenuItem("Quit DS//Monitor", callback=rumps.quit_application)]
+        self.ai_item = rumps.MenuItem("⚡ AI Analysis: ON", callback=self.toggle_ai)
+        self.menu = ["Idle — waiting for save", None, self.ai_item, None, rumps.MenuItem("Quit DS//Monitor", callback=rumps.quit_application)]
         self._last_status = "idle"
+
+    def toggle_ai(self, _):
+        global AI_ENABLED
+        AI_ENABLED = not AI_ENABLED
+        self.ai_item.title = f"{'⚡' if AI_ENABLED else '○'} AI Analysis: {'ON' if AI_ENABLED else 'OFF'}"
+        print(f"[ai] {'enabled' if AI_ENABLED else 'disabled'}")
 
     def update_menu(self):
         s = state["status"]
