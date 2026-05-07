@@ -31,7 +31,7 @@ WATCH_DIR = Path.home() / "Documents" / "projects"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SYSTEM_PROMPT_PATH = Path(__file__).parent / "orchestration_knowledge.md"
 PORT = 47291
-AI_ENABLED = True  # toggle via menu bar
+AI_ENABLED = False  # toggle via menu bar
 
 SB_URL = "https://ekfipctoizteywmqspcw.supabase.co"
 SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVrZmlwY3RvaXp0ZXl3bXFzcGN3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI4MjM1ODcsImV4cCI6MjA4ODM5OTU4N30.hFlhgzVvwnMrGep9gLroaT-iyiFK5raLQyuNW1rnXjA"
@@ -699,7 +699,7 @@ STATUS_COLORS = {
 class DSMonitorApp(rumps.App):
     def __init__(self):
         super().__init__("♩", quit_button=None)
-        self.ai_item = rumps.MenuItem("⚡ AI Analysis: ON", callback=self.toggle_ai)
+        self.ai_item = rumps.MenuItem("○ AI Analysis: OFF", callback=self.toggle_ai)
         self.menu = ["Idle — waiting for save", None, self.ai_item, None, rumps.MenuItem("Quit DS//Monitor", callback=rumps.quit_application)]
         self._last_status = "idle"
 
