@@ -571,7 +571,7 @@ def analyse_with_claude(passage_text: str, cue_name: str) -> dict:
         system_prompt = SYSTEM_PROMPT_PATH.read_text()
 
         message = client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-sonnet-4-5",
             max_tokens=1500,
             system=system_prompt,
             messages=[{
