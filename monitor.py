@@ -745,6 +745,8 @@ class DSMonitorApp(rumps.App):
             items.append(rumps.MenuItem(f"Parsing {cue}…", callback=None))
 
         items.append(None)
+        items.append(self.ai_item)
+        items.append(None)
         items.append(rumps.MenuItem("Quit DS//Monitor", callback=rumps.quit_application))
 
         self.menu.clear()
