@@ -170,11 +170,6 @@ def push_pending_imports(xml_path: Path, cues: list[dict]):
 
 def handle_xml(xml_path: Path):
     """Push raw XML content to pending_imports for DS Scoring to parse."""
-    folder = xml_path.parent
-    cprs = list(folder.glob("*.cpr"))
-    if not cprs:
-        print(f"  [xml skip] no CPR in same folder: {xml_path.name}")
-        return
     print(f"  [xml detected] {xml_path.name}")
     try:
         raw_xml = xml_path.read_text(encoding='utf-8', errors='ignore')
