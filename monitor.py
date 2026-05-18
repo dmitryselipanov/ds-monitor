@@ -27,7 +27,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 # ── Config ────────────────────────────────────────────────────────────────
-WATCH_DIR = Path.home() / "Documents" / "projects"
+WATCH_DIR = Path.home() / "Documents" / "PROJECTS"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SYSTEM_PROMPT_PATH = Path(__file__).parent / "orchestration_knowledge.md"
 PORT = 47291
@@ -171,7 +171,7 @@ def push_pending_imports(xml_path: Path, cues: list[dict]):
 def handle_xml(xml_path: Path):
     """Push raw XML content to pending_imports for DS Scoring to parse."""
     print(f"  [xml detected] {xml_path.name} (full path: {xml_path})")
-    print(f"  [xml] WATCH_DIR={WATCH_DIR}, file inside watch? {str(xml_path).startswith(str(WATCH_DIR))}")
+    print(f"  [xml] WATCH_DIR={WATCH_DIR}, file inside watch? {str(xml_path).lower().startswith(str(WATCH_DIR).lower())}")
     try:
         raw_xml = xml_path.read_text(encoding='utf-8', errors='ignore')
     except Exception as e:
