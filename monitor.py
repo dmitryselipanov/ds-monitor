@@ -179,30 +179,32 @@ def handle_xml(xml_path: Path):
 
     try:
         import urllib.request
-        # Find matching project
-        req = urllib.request.Request(
-            f"{SB_URL}/rest/v1/projects?select=id,title",
-            headers={"apikey": SB_KEY, "Authorization": f"Bearer {SB_KEY}"}
-        )
-        with urllib.request.urlopen(req) as r:
-            projects = json.loads(r.read())
-
+        # Find matching project (may 403 with anon key — that's OK, app handles null project_id)
         project_id = None
-        parts = xml_path.parts
-        watch_parts = WATCH_DIR.parts
-        if len(parts) > len(watch_parts):
-            project_folder = parts[len(watch_parts)].lower()
-            for p in projects:
-                title = (p.get('title') or '').lower().strip()
-                if title and (title == project_folder or project_folder.startswith(title) or title.startswith(project_folder)):
-                    project_id = p['id']
-                    break
-            if not project_id:
+        try:
+            req = urllib.request.Request(
+                f"{SB_URL}/rest/v1/projects?select=id,title",
+                headers={"apikey": SB_KEY, "Authorization": f"Bearer {SB_KEY}"}
+            )
+            with urllib.request.urlopen(req) as r:
+                projects = json.loads(r.read())
+            parts = xml_path.parts
+            watch_parts = WATCH_DIR.parts
+            if len(parts) > len(watch_parts):
+                project_folder = parts[len(watch_parts)].lower()
                 for p in projects:
                     title = (p.get('title') or '').lower().strip()
-                    if title and any(title in part.lower() for part in parts):
+                    if title and (title == project_folder or project_folder.startswith(title) or title.startswith(project_folder)):
                         project_id = p['id']
                         break
+                if not project_id:
+                    for p in projects:
+                        title = (p.get('title') or '').lower().strip()
+                        if title and any(title in part.lower() for part in parts):
+                            project_id = p['id']
+                            break
+        except Exception as proj_err:
+            print(f"  [xml] could not resolve project_id ({proj_err}), pushing with null")
 
         row = {
             "project_id": project_id,
