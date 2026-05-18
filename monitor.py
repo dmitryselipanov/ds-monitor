@@ -216,10 +216,15 @@ def handle_xml(xml_path: Path):
         except Exception as proj_err:
             log(f"[xml] project_id unresolved ({proj_err}), pushing null")
 
+        # Compress XML to reduce payload size and avoid Supabase statement timeout
+        import gzip, base64
+        compressed = base64.b64encode(gzip.compress(raw_xml.encode('utf-8'))).decode('ascii')
+        log(f"[xml] raw={len(raw_xml)} bytes, compressed={len(compressed)} bytes")
+
         row = {
             "project_id": project_id,
             "raw_xml_path": str(xml_path),
-            "raw_xml": raw_xml,
+            "raw_xml": compressed,
             "title": xml_path.stem,
             "status": "pending"
         }
@@ -232,7 +237,8 @@ def handle_xml(xml_path: Path):
                 "apikey": SB_KEY,
                 "Authorization": f"Bearer {SB_KEY}",
                 "Content-Type": "application/json",
-                "Prefer": "return=minimal"
+                "Prefer": "return=minimal",
+                "X-Statement-Timeout": "30000"
             }
         )
         with urllib.request.urlopen(req) as r:
