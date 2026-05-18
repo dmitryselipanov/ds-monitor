@@ -237,6 +237,9 @@ def handle_xml(xml_path: Path):
         )
         with urllib.request.urlopen(req) as r:
             log(f"[xml] PUSHED OK project_id={project_id}")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()[:300]
+        log(f"[xml error] PUSH FAILED: {e.code} {body}")
     except Exception as e:
         log(f"[xml error] PUSH FAILED: {e}")
 
@@ -637,49 +640,32 @@ def run_analysis(cpr_path: Path):
 
 # ── File Watcher ──────────────────────────────────────────────────────────
 
-class CprHandler(FileSystemEventHandler):
-    def __init__(self):
-        self._debounce_timers = {}
-
-    def _handle(self, path_str, event_type="?"):
-        path = Path(path_str)
-        if path.suffix.lower() != ".cpr":
-            return
-        if re.search(r'-\d{2}$', path.stem):
-            print(f"[skip] backup ({event_type}): {path.name}")
-            return
-        print(f"[detected] ({event_type}): {path.name}")
-        if path in self._debounce_timers:
-            self._debounce_timers[path].cancel()
-        timer = threading.Timer(2.0, lambda p=path: threading.Thread(target=run_analysis, args=(p,), daemon=True).start())
-        self._debounce_timers[path] = timer
-        timer.start()
-
-    def on_modified(self, event):
-        if not event.is_directory:
-            self._handle(event.src_path, "modified")
-            self._handle_xml(event.src_path)
-
-    def on_created(self, event):
-        if not event.is_directory:
-            self._handle(event.src_path, "created")
-            self._handle_xml(event.src_path)
-
-    def on_moved(self, event):
-        if not event.is_directory:
-            print(f"[moved] {Path(event.src_path).name} → {Path(event.dest_path).name}")
-            self._handle(event.dest_path, "moved")
-            self._handle_xml(event.dest_path)
-
-    def _handle_xml(self, path_str):
-        path = Path(path_str)
-        if path.suffix.lower() != ".xml":
-            return
-        if path in self._debounce_timers:
-            self._debounce_timers[path].cancel()
-        timer = threading.Timer(2.0, lambda p=path: threading.Thread(target=handle_xml, args=(p,), daemon=True).start())
-        self._debounce_timers[path] = timer
-        timer.start()
+def poll_loop():
+    """Poll WATCH_DIR every 5 seconds for new/modified XML and CPR files."""
+    seen = {}  # path -> mtime
+    log(f"[poll] starting poll loop on {WATCH_DIR}")
+    while True:
+        try:
+            for path in WATCH_DIR.rglob("*"):
+                try:
+                    mtime = path.stat().st_mtime
+                except:
+                    continue
+                if path.suffix.lower() == ".xml":
+                    if path not in seen or seen[path] != mtime:
+                        if path in seen:  # modified, not first scan
+                            log(f"[poll] xml changed: {path.name}")
+                            threading.Thread(target=handle_xml, args=(path,), daemon=True).start()
+                        seen[path] = mtime
+                elif path.suffix.lower() == ".cpr":
+                    if not re.search(r"-\d{2}$", path.stem):
+                        if path not in seen or seen[path] != mtime:
+                            if path in seen:
+                                threading.Thread(target=run_analysis, args=(path,), daemon=True).start()
+                            seen[path] = mtime
+        except Exception as e:
+            log(f"[poll error] {e}")
+        time.sleep(5)
 
 
 # ── Local HTTP Server (floating window) ───────────────────────────────────
