@@ -758,17 +758,13 @@ class DSMonitorApp(rumps.App):
 
 def run_menubar():
     app = DSMonitorApp()
-    # Start watcher in background
-    handler = CprHandler()
-    observer = Observer()
-    observer.schedule(handler, str(WATCH_DIR), recursive=True)
-    observer.start()
+    # Start poll loop in background thread (no Full Disk Access permission needed)
+    t = threading.Thread(target=poll_loop, daemon=True)
+    t.start()
     log(f"DS//Monitor started — watching {WATCH_DIR}"); print(f"DS//Monitor started — watching {WATCH_DIR}")
     if not ANTHROPIC_API_KEY:
         print("⚠ No ANTHROPIC_API_KEY — running in test mode")
     app.run()
-    observer.stop()
-    observer.join()
 
 
 
