@@ -15,6 +15,15 @@ import threading
 from pathlib import Path
 from datetime import datetime
 
+def log(msg):
+    """Write directly to log file, bypassing stdout buffering."""
+    try:
+        with open("/tmp/ds-monitor.log", "a") as f:
+            f.write(f"{datetime.now().strftime('%H:%M:%S')} {msg}\n")
+            f.flush()
+    except:
+        pass
+
 try:
     import rumps
     HAS_RUMPS = True
@@ -165,17 +174,17 @@ def push_pending_imports(xml_path: Path, cues: list[dict]):
         with urllib.request.urlopen(req) as r:
             print(f"  [xml] pushed {len(rows)} cues to pending_imports (project_id={project_id})")
     except Exception as e:
-        print(f"  [xml error] push failed: {e}")
+        log(f"[xml error] PUSH FAILED: {e}")
 
 
 def handle_xml(xml_path: Path):
     """Push raw XML content to pending_imports for DS Scoring to parse."""
-    print(f"  [xml detected] {xml_path.name} (full path: {xml_path})")
-    print(f"  [xml] WATCH_DIR={WATCH_DIR}, file inside watch? {str(xml_path).lower().startswith(str(WATCH_DIR).lower())}")
+    log(f"[xml detected] {xml_path.name} (full: {xml_path})")
+    log(f"[xml] inside watch? {str(xml_path).lower().startswith(str(WATCH_DIR).lower())}")
     try:
         raw_xml = xml_path.read_text(encoding='utf-8', errors='ignore')
     except Exception as e:
-        print(f"  [xml error] could not read file: {e}")
+        log(f"[xml error] could not read: {e}")
         return
 
     try:
@@ -205,7 +214,7 @@ def handle_xml(xml_path: Path):
                             project_id = p['id']
                             break
         except Exception as proj_err:
-            print(f"  [xml] could not resolve project_id ({proj_err}), pushing with null")
+            log(f"[xml] project_id unresolved ({proj_err}), pushing null")
 
         row = {
             "project_id": project_id,
@@ -227,9 +236,9 @@ def handle_xml(xml_path: Path):
             }
         )
         with urllib.request.urlopen(req) as r:
-            print(f"  [xml] pushed raw XML to pending_imports (project_id={project_id})")
+            log(f"[xml] PUSHED OK project_id={project_id}")
     except Exception as e:
-        print(f"  [xml error] push failed: {e}")
+        log(f"[xml error] PUSH FAILED: {e}")
 
 def diagnose_cpr(cpr_path: Path):
     """Dump bytes around first note record to find track name pattern."""
@@ -768,7 +777,7 @@ def run_menubar():
     observer = Observer()
     observer.schedule(handler, str(WATCH_DIR), recursive=True)
     observer.start()
-    print(f"DS//Monitor started — watching {WATCH_DIR}")
+    log(f"DS//Monitor started — watching {WATCH_DIR}"); print(f"DS//Monitor started — watching {WATCH_DIR}")
     if not ANTHROPIC_API_KEY:
         print("⚠ No ANTHROPIC_API_KEY — running in test mode")
     app.run()
