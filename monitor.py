@@ -649,8 +649,6 @@ def run_analysis(cpr_path: Path):
 def poll_loop():
     """Poll WATCH_DIR every 5 seconds for new/modified XML and CPR files."""
     seen = {}  # path -> mtime
-    first_scan = True
-    start_time = time.time()
     log(f"[poll] starting poll loop on {WATCH_DIR}")
     while True:
         try:
@@ -660,14 +658,9 @@ def poll_loop():
                 except:
                     continue
                 if path.suffix.lower() == ".xml":
-                    if path not in seen or seen[path] != mtime:
-                        if path in seen:  # modified, not first scan
-                            log(f"[poll] xml changed: {path.name}")
-                            threading.Thread(target=handle_xml, args=(path,), daemon=True).start()
-                        elif first_scan and (start_time - mtime) < 1800:
-                            # First scan: catch XMLs modified in last 30 min (handles monitor restart mid-session)
-                            log(f"[poll] xml recent on startup (age {int(start_time - mtime)}s): {path.name}")
-                            threading.Thread(target=handle_xml, args=(path,), daemon=True).start()
+                    if seen.get(path) != mtime:
+                        log(f"[poll] xml detected: {path.name}")
+                        threading.Thread(target=handle_xml, args=(path,), daemon=True).start()
                         seen[path] = mtime
                 elif path.suffix.lower() == ".cpr":
                     if not re.search(r"-\d{2}$", path.stem):
@@ -677,7 +670,6 @@ def poll_loop():
                             seen[path] = mtime
         except Exception as e:
             log(f"[poll error] {e}")
-        first_scan = False
         time.sleep(5)
 
 
