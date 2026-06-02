@@ -646,10 +646,27 @@ def run_analysis(cpr_path: Path):
 
 # ── File Watcher ──────────────────────────────────────────────────────────
 
+SEEN_CACHE_PATH = Path.home() / ".ds-monitor-seen.json"
+
+def load_seen_cache():
+    """Load persisted seen cache from disk."""    try:
+        if SEEN_CACHE_PATH.exists():
+            data = json.loads(SEEN_CACHE_PATH.read_text())
+            return {Path(k): v for k, v in data.items()}
+    except Exception as e:
+        log(f"[cache] failed to load: {e}")
+    return {}
+
+def save_seen_cache(seen):
+    """Persist seen cache to disk."""    try:
+        SEEN_CACHE_PATH.write_text(json.dumps({str(k): v for k, v in seen.items()}))
+    except Exception as e:
+        log(f"[cache] failed to save: {e}")
+
 def poll_loop():
     """Poll WATCH_DIR every 5 seconds for new/modified XML and CPR files."""
-    seen = {}  # path -> mtime
-    log(f"[poll] starting poll loop on {WATCH_DIR}")
+    seen = load_seen_cache()  # persist across restarts — prevents re-submitting existing XMLs
+    log(f"[poll] starting poll loop on {WATCH_DIR} (loaded {len(seen)} cached entries)")
     while True:
         try:
             for path in WATCH_DIR.rglob("*"):
@@ -662,6 +679,7 @@ def poll_loop():
                         log(f"[poll] xml detected: {path.name}")
                         threading.Thread(target=handle_xml, args=(path,), daemon=True).start()
                         seen[path] = mtime
+                        save_seen_cache(seen)  # persist immediately after processing
                 elif path.suffix.lower() == ".cpr":
                     if not re.search(r"-\d{2}$", path.stem):
                         if path not in seen or seen[path] != mtime:
