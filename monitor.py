@@ -649,7 +649,8 @@ def run_analysis(cpr_path: Path):
 SEEN_CACHE_PATH = Path.home() / ".ds-monitor-seen.json"
 
 def load_seen_cache():
-    """Load persisted seen cache from disk."""    try:
+    """Load persisted seen cache from disk."""
+    try:
         if SEEN_CACHE_PATH.exists():
             data = json.loads(SEEN_CACHE_PATH.read_text())
             return {Path(k): v for k, v in data.items()}
@@ -658,7 +659,8 @@ def load_seen_cache():
     return {}
 
 def save_seen_cache(seen):
-    """Persist seen cache to disk."""    try:
+    """Persist seen cache to disk."""
+    try:
         SEEN_CACHE_PATH.write_text(json.dumps({str(k): v for k, v in seen.items()}))
     except Exception as e:
         log(f"[cache] failed to save: {e}")
