@@ -35,6 +35,12 @@ except ImportError:
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+try:
+    import rtmidi
+    HAS_RTMIDI = True
+except ImportError:
+    HAS_RTMIDI = False
+
 # ── Config ────────────────────────────────────────────────────────────────
 WATCH_DIR = Path.home() / "Documents" / "PROJECTS"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -44,6 +50,79 @@ AI_ENABLED = False  # toggle via menu bar
 
 SB_URL = "https://ekfipctoizteywmqspcw.supabase.co"
 SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVrZmlwY3RvaXp0ZXl3bXFzcGN3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI4MjM1ODcsImV4cCI6MjA4ODM5OTU4N30.hFlhgzVvwnMrGep9gLroaT-iyiFK5raLQyuNW1rnXjA"
+
+# ── Cubase Track Bridge (MIDI listener) ──────────────────────────────────
+
+IAC_PORT_NAME = 'DS Bridge'  # must match IAC Driver bus name in Audio MIDI Setup
+_last_track_name = None
+
+def push_active_track(track_name):
+    """Broadcast selected Cubase track name to Supabase realtime channel."""
+    global _last_track_name
+    if track_name == _last_track_name:
+        return
+    _last_track_name = track_name
+    log(f"[bridge] active track: {track_name!r}")
+    try:
+        import urllib.request
+        payload = json.dumps({'event': 'active_track', 'payload': {'track_name': track_name}}).encode()
+        req = urllib.request.Request(
+            f"{SB_URL}/realtime/v1/broadcast",
+            data=payload,
+            headers={
+                'apikey': SB_KEY,
+                'Authorization': f'Bearer {SB_KEY}',
+                'Content-Type': 'application/json',
+            },
+            method='POST'
+        )
+        urllib.request.urlopen(req, timeout=3)
+    except Exception as e:
+        log(f"[bridge] push failed: {e}")
+
+def parse_sysex_string(data):
+    """Extract ASCII string from SysEx: F0 7D [bytes] F7"""
+    if len(data) < 3:
+        return None
+    if data[0] != 0xF0 or data[-1] != 0xF7:
+        return None
+    if data[1] != 0x7D:  # our manufacturer ID
+        return None
+    try:
+        return bytes(data[2:-1]).decode('ascii', errors='replace').strip()
+    except:
+        return None
+
+def start_midi_listener():
+    """Listen to IAC Driver for track name SysEx from Cubase."""
+    if not HAS_RTMIDI:
+        log('[bridge] python-rtmidi not installed — track bridge disabled')
+        return
+    def run():
+        try:
+            midi_in = rtmidi.MidiIn()
+            ports = midi_in.get_ports()
+            log(f'[bridge] MIDI ports: {ports}')
+            port_idx = next((i for i, p in enumerate(ports) if IAC_PORT_NAME in p), None)
+            if port_idx is None:
+                log(f'[bridge] IAC port "{IAC_PORT_NAME}" not found — track bridge disabled')
+                return
+            midi_in.open_port(port_idx)
+            midi_in.ignore_types(sysex=False)  # enable SysEx
+            log(f'[bridge] listening on "{ports[port_idx]}"')
+            while True:
+                msg = midi_in.get_message()
+                if msg:
+                    data, _ = msg
+                    track_name = parse_sysex_string(data)
+                    if track_name is not None:
+                        push_active_track(track_name)
+                time.sleep(0.02)
+        except Exception as e:
+            log(f'[bridge] MIDI listener error: {e}')
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    log('[bridge] MIDI listener thread started')
 
 # ── XML Parser ────────────────────────────────────────────────────────────
 
@@ -784,6 +863,7 @@ class DSMonitorApp(rumps.App):
 def run_menubar():
     app = DSMonitorApp()
     # Start poll loop in background thread (no Full Disk Access permission needed)
+    start_midi_listener()
     t = threading.Thread(target=poll_loop, daemon=True)
     t.start()
     log(f"DS//Monitor started — watching {WATCH_DIR}"); print(f"DS//Monitor started — watching {WATCH_DIR}")
