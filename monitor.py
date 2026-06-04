@@ -65,7 +65,17 @@ def push_active_track(track_name):
     log(f"[bridge] active track: {track_name!r}")
     try:
         import urllib.request
-        payload = json.dumps({'event': 'active_track', 'payload': {'track_name': track_name}}).encode()
+        # Supabase realtime broadcast REST API
+        # Channel must match what DS//Scoring subscribes to
+        project_id = fetch_project_id_for_track(track_name) or get_active_project_id()
+        channel = f'cubase-bridge:{project_id}' if project_id else 'cubase-bridge:global'
+        payload = json.dumps({
+            'messages': [{
+                'topic': channel,
+                'event': 'active_track',
+                'payload': {'track_name': track_name}
+            }]
+        }).encode()
         req = urllib.request.Request(
             f"{SB_URL}/realtime/v1/broadcast",
             data=payload,
@@ -76,7 +86,8 @@ def push_active_track(track_name):
             },
             method='POST'
         )
-        urllib.request.urlopen(req, timeout=3)
+        resp = urllib.request.urlopen(req, timeout=3)
+        log(f'[bridge] broadcast sent to {channel}, status={resp.status}')
     except Exception as e:
         log(f"[bridge] push failed: {e}")
 
@@ -726,6 +737,33 @@ def run_analysis(cpr_path: Path):
 # ── File Watcher ──────────────────────────────────────────────────────────
 
 SEEN_CACHE_PATH = Path.home() / ".ds-monitor-seen.json"
+_active_project_id = None
+
+def fetch_project_id_for_track(track_name):
+    """Try to find project_id by matching track cue number against Supabase cues."""
+    try:
+        import urllib.request
+        # Extract cue number from track name e.g. "1m01 Aerial" -> "1m01"
+        parts = track_name.strip().split()
+        if not parts:
+            return _active_project_id
+        cue_num = parts[0].lower()
+        url = f"{SB_URL}/rest/v1/cues?cue_number=ilike.{cue_num}&select=project_id&limit=1"
+        req = urllib.request.Request(url, headers={'apikey': SB_KEY, 'Authorization': f'Bearer {SB_KEY}'})
+        data = json.loads(urllib.request.urlopen(req, timeout=3).read())
+        if data and data[0].get('project_id'):
+            return data[0]['project_id']
+    except:
+        pass
+    return _active_project_id
+
+def set_active_project_id(pid):
+    global _active_project_id
+    if pid:
+        _active_project_id = pid
+
+def get_active_project_id():
+    return _active_project_id
 
 def load_seen_cache():
     """Load persisted seen cache from disk."""
