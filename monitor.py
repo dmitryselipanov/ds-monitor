@@ -65,29 +65,29 @@ def push_active_track(track_name):
     log(f"[bridge] active track: {track_name!r}")
     try:
         import urllib.request
-        # Supabase realtime broadcast REST API
-        # Channel must match what DS//Scoring subscribes to
+        # Write active track to Supabase table — DS//Scoring polls/subscribes to it
         project_id = fetch_project_id_for_track(track_name) or get_active_project_id()
-        channel = f'cubase-bridge:{project_id}' if project_id else 'cubase-bridge:global'
+        if not project_id:
+            log(f'[bridge] no project_id found for track {track_name!r}, skipping push')
+            return
         payload = json.dumps({
-            'messages': [{
-                'topic': channel,
-                'event': 'active_track',
-                'payload': {'track_name': track_name}
-            }]
+            'project_id': project_id,
+            'track_name': track_name,
+            'updated_at': __import__('datetime').datetime.utcnow().isoformat() + 'Z'
         }).encode()
         req = urllib.request.Request(
-            f"{SB_URL}/realtime/v1/broadcast",
+            f"{SB_URL}/rest/v1/active_track",
             data=payload,
             headers={
                 'apikey': SB_KEY,
                 'Authorization': f'Bearer {SB_KEY}',
                 'Content-Type': 'application/json',
+                'Prefer': 'resolution=merge-duplicates',
             },
             method='POST'
         )
         resp = urllib.request.urlopen(req, timeout=3)
-        log(f'[bridge] broadcast sent to {channel}, status={resp.status}')
+        log(f'[bridge] active track pushed for project {project_id}, status={resp.status}')
     except Exception as e:
         log(f"[bridge] push failed: {e}")
 
