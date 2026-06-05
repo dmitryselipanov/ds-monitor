@@ -26,6 +26,10 @@ def log(msg):
 
 try:
     import rumps
+    # Hide from Dock — LSUIElement makes it a pure menu bar app
+    import AppKit
+    info = AppKit.NSBundle.mainBundle().infoDictionary()
+    info['LSUIElement'] = '1'
     HAS_RUMPS = True
 except ImportError:
     HAS_RUMPS = False
