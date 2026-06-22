@@ -46,7 +46,25 @@ except ImportError:
     HAS_RTMIDI = False
 
 # ── Config ────────────────────────────────────────────────────────────────
+# Primary watch directory (always watched)
 WATCH_DIR = Path.home() / "Documents" / "PROJECTS"
+
+# Additional watch directories — add more paths in ~/.ds-monitor-config.json:
+# { "extra_watch_dirs": ["/Users/Dmitry/Documents/Arrangements", "/Users/Dmitry/Documents/Albums"] }
+DS_CONFIG_PATH = Path.home() / ".ds-monitor-config.json"
+
+def load_extra_watch_dirs():
+    try:
+        if DS_CONFIG_PATH.exists():
+            data = json.loads(DS_CONFIG_PATH.read_text())
+            return [Path(p) for p in data.get("extra_watch_dirs", []) if Path(p).exists()]
+    except Exception as e:
+        log(f"[config] failed to load extra watch dirs: {e}")
+    return []
+
+EXTRA_WATCH_DIRS = load_extra_watch_dirs()
+ALL_WATCH_DIRS = [WATCH_DIR] + EXTRA_WATCH_DIRS
+
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SYSTEM_PROMPT_PATH = Path(__file__).parent / "orchestration_knowledge.md"
 PORT = 47291
@@ -218,12 +236,21 @@ def push_pending_imports(xml_path: Path, cues: list[dict]):
         return
     try:
         import urllib.request
-        # Find matching project by walking up from XML to PROJECTS root
-        # Structure: PROJECTS/[ProjectFolder]/...subdirs.../file.xml
+        # Find matching project by walking up from XML to nearest watch root
+        # Structure: WATCH_DIR/[ProjectFolder]/...subdirs.../file.xml
         project_id = None
         parts = xml_path.parts
-        watch_parts = WATCH_DIR.parts
-        # Find the folder immediately under WATCH_DIR
+        # Find which watch dir this XML belongs to
+        active_watch_dir = WATCH_DIR
+        for wd in ALL_WATCH_DIRS:
+            try:
+                xml_path.relative_to(wd)
+                active_watch_dir = wd
+                break
+            except ValueError:
+                continue
+        watch_parts = active_watch_dir.parts
+        # Find the folder immediately under the watch dir
         if len(parts) > len(watch_parts):
             project_folder = parts[len(watch_parts)].lower()
             for p in projects:
@@ -274,7 +301,7 @@ def push_pending_imports(xml_path: Path, cues: list[dict]):
 def handle_xml(xml_path: Path):
     """Push raw XML content to pending_imports for DS Scoring to parse."""
     log(f"[xml detected] {xml_path.name} (full: {xml_path})")
-    log(f"[xml] inside watch? {str(xml_path).lower().startswith(str(WATCH_DIR).lower())}")
+    log(f"[xml] inside watch? {any(str(xml_path).lower().startswith(str(wd).lower()) for wd in ALL_WATCH_DIRS)}")
     try:
         raw_xml = xml_path.read_text(encoding='utf-8', errors='ignore')
     except Exception as e:
@@ -293,7 +320,7 @@ def handle_xml(xml_path: Path):
             with urllib.request.urlopen(req) as r:
                 projects = json.loads(r.read())
             parts = xml_path.parts
-            watch_parts = WATCH_DIR.parts
+            watch_parts = active_watch_dir.parts
             if len(parts) > len(watch_parts):
                 project_folder = parts[len(watch_parts)].lower()
                 for p in projects:
@@ -789,10 +816,13 @@ def save_seen_cache(seen):
 def poll_loop():
     """Poll WATCH_DIR every 5 seconds for new/modified XML and CPR files."""
     seen = load_seen_cache()  # persist across restarts — prevents re-submitting existing XMLs
-    log(f"[poll] starting poll loop on {WATCH_DIR} (loaded {len(seen)} cached entries)")
+    EXTRA_WATCH_DIRS = load_extra_watch_dirs()  # reload on each start in case config changed
+    ALL_WATCH_DIRS = [WATCH_DIR] + EXTRA_WATCH_DIRS
+    log(f"[poll] watching {len(ALL_WATCH_DIRS)} dir(s): {', '.join(str(d) for d in ALL_WATCH_DIRS)} (loaded {len(seen)} cached entries)")
     while True:
         try:
-            for path in WATCH_DIR.rglob("*"):
+            for watch_root in ALL_WATCH_DIRS:
+              for path in watch_root.rglob("*"):
                 try:
                     mtime = path.stat().st_mtime
                 except:
