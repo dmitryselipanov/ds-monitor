@@ -254,16 +254,23 @@ def push_pending_imports(xml_path: Path, cues: list[dict]):
         if len(parts) > len(watch_parts):
             project_folder = parts[len(watch_parts)].lower()
             for p in projects:
+                # First check cubase_folder_name (set in DS Scoring when folder != title)
+                cubase_folder = (p.get('cubase_folder_name') or '').lower().strip()
                 title = (p.get('title') or '').lower().strip()
-                if title and (title == project_folder or project_folder.startswith(title) or title.startswith(project_folder)):
+                match_name = cubase_folder if cubase_folder else title
+                if match_name and (match_name == project_folder or project_folder.startswith(match_name) or match_name.startswith(project_folder)):
                     project_id = p['id']
+                    log(f"[xml] matched project '{p.get('title')}' via {'cubase_folder_name' if cubase_folder else 'title'} → '{match_name}'")
                     break
-            # Fallback: check if any part of the path contains the title
+            # Fallback: check if any part of the path contains the title or cubase_folder_name
             if not project_id:
                 for p in projects:
+                    cubase_folder = (p.get('cubase_folder_name') or '').lower().strip()
                     title = (p.get('title') or '').lower().strip()
-                    if title and any(title in part.lower() for part in parts):
+                    match_name = cubase_folder if cubase_folder else title
+                    if match_name and any(match_name in part.lower() for part in parts):
                         project_id = p['id']
+                        log(f"[xml] fallback matched project '{p.get('title')}' via path parts")
                         break
 
         rows = []
@@ -314,7 +321,7 @@ def handle_xml(xml_path: Path):
         project_id = None
         try:
             req = urllib.request.Request(
-                f"{SB_URL}/rest/v1/projects?select=id,title",
+                f"{SB_URL}/rest/v1/projects?select=id,title,cubase_folder_name",
                 headers={"apikey": SB_KEY, "Authorization": f"Bearer {SB_KEY}"}
             )
             with urllib.request.urlopen(req) as r:
