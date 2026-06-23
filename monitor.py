@@ -327,7 +327,16 @@ def handle_xml(xml_path: Path):
             with urllib.request.urlopen(req) as r:
                 projects = json.loads(r.read())
             parts = xml_path.parts
-            watch_parts = active_watch_dir.parts
+            # Determine which watch dir contains this XML
+            _active_wd = WATCH_DIR
+            for _wd in ALL_WATCH_DIRS:
+                try:
+                    xml_path.relative_to(_wd)
+                    _active_wd = _wd
+                    break
+                except ValueError:
+                    pass
+            watch_parts = _active_wd.parts
             if len(parts) > len(watch_parts):
                 project_folder = parts[len(watch_parts)].lower()
                 for p in projects:
