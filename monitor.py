@@ -236,9 +236,21 @@ def push_pending_imports(xml_path: Path, cues: list[dict]):
         return
     try:
         import urllib.request
+        # Fetch projects from Supabase for matching
+        project_id = None
+        try:
+            _preq = urllib.request.Request(
+                f"{SB_URL}/rest/v1/projects?select=id,title,cubase_folder_name",
+                headers={"apikey": SB_KEY, "Authorization": f"Bearer {SB_KEY}"}
+            )
+            with urllib.request.urlopen(_preq) as _pr:
+                projects = json.loads(_pr.read())
+        except Exception as _pe:
+            log(f"[xml] could not fetch projects: {_pe}")
+            projects = []
+
         # Find matching project by walking up from XML to nearest watch root
         # Structure: WATCH_DIR/[ProjectFolder]/...subdirs.../file.xml
-        project_id = None
         parts = xml_path.parts
         # Find which watch dir this XML belongs to
         active_watch_dir = WATCH_DIR
@@ -250,6 +262,7 @@ def push_pending_imports(xml_path: Path, cues: list[dict]):
             except ValueError:
                 continue
         watch_parts = active_watch_dir.parts
+        log(f"[xml] project_folder='{parts[len(watch_parts)] if len(parts)>len(watch_parts) else '?'}' projects_loaded={len(projects)}")
         # Find the folder immediately under the watch dir
         if len(parts) > len(watch_parts):
             project_folder = parts[len(watch_parts)].lower()
