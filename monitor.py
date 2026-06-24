@@ -353,22 +353,30 @@ def handle_xml(xml_path: Path):
             if len(parts) > len(watch_parts):
                 project_folder = parts[len(watch_parts)].lower()
                 log(f"[xml] project_folder='{project_folder}' projects_loaded={len(projects)}")
+                def _matches(candidate):
+                    c = (candidate or '').lower().strip()
+                    return bool(c and (c == project_folder or project_folder.startswith(c) or c.startswith(project_folder)))
                 for p in projects:
-                    cubase_folder = (p.get('cubase_folder_name') or '').lower().strip()
-                    title = (p.get('title') or '').lower().strip()
-                    match_name = cubase_folder if cubase_folder else title
-                    if match_name and (match_name == project_folder or project_folder.startswith(match_name) or match_name.startswith(project_folder)):
+                    cubase_folder = p.get('cubase_folder_name') or ''
+                    title = p.get('title') or ''
+                    if _matches(cubase_folder):
                         project_id = p['id']
-                        log(f"[xml] matched project '{p.get('title')}' via {'cubase_folder_name' if cubase_folder else 'title'} → '{match_name}'")
+                        log(f"[xml] matched project '{title}' via cubase_folder_name → '{cubase_folder}'")
+                        break
+                    if _matches(title):
+                        project_id = p['id']
+                        log(f"[xml] matched project '{title}' via title")
                         break
                 if not project_id:
                     for p in projects:
                         cubase_folder = (p.get('cubase_folder_name') or '').lower().strip()
                         title = (p.get('title') or '').lower().strip()
-                        match_name = cubase_folder if cubase_folder else title
-                        if match_name and any(match_name in part.lower() for part in parts):
-                            project_id = p['id']
-                            log(f"[xml] fallback matched project '{p.get('title')}' via path parts")
+                        for candidate in filter(None, [cubase_folder, title]):
+                            if any(candidate in part.lower() for part in parts):
+                                project_id = p['id']
+                                log(f"[xml] fallback matched project '{p.get('title')}' via path parts → '{candidate}'")
+                                break
+                        if project_id:
                             break
                 if not project_id:
                     log(f"[xml] no match found — titles checked: {[p.get('title') for p in projects]}")
