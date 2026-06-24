@@ -352,17 +352,26 @@ def handle_xml(xml_path: Path):
             watch_parts = _active_wd.parts
             if len(parts) > len(watch_parts):
                 project_folder = parts[len(watch_parts)].lower()
+                log(f"[xml] project_folder='{project_folder}' projects_loaded={len(projects)}")
                 for p in projects:
+                    cubase_folder = (p.get('cubase_folder_name') or '').lower().strip()
                     title = (p.get('title') or '').lower().strip()
-                    if title and (title == project_folder or project_folder.startswith(title) or title.startswith(project_folder)):
+                    match_name = cubase_folder if cubase_folder else title
+                    if match_name and (match_name == project_folder or project_folder.startswith(match_name) or match_name.startswith(project_folder)):
                         project_id = p['id']
+                        log(f"[xml] matched project '{p.get('title')}' via {'cubase_folder_name' if cubase_folder else 'title'} → '{match_name}'")
                         break
                 if not project_id:
                     for p in projects:
+                        cubase_folder = (p.get('cubase_folder_name') or '').lower().strip()
                         title = (p.get('title') or '').lower().strip()
-                        if title and any(title in part.lower() for part in parts):
+                        match_name = cubase_folder if cubase_folder else title
+                        if match_name and any(match_name in part.lower() for part in parts):
                             project_id = p['id']
+                            log(f"[xml] fallback matched project '{p.get('title')}' via path parts")
                             break
+                if not project_id:
+                    log(f"[xml] no match found — titles checked: {[p.get('title') for p in projects]}")
         except Exception as proj_err:
             log(f"[xml] project_id unresolved ({proj_err}), pushing null")
 
