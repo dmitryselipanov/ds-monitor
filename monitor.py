@@ -887,7 +887,7 @@ def poll_loop():
                             seen[path] = mtime
         except Exception as e:
             log(f"[poll error] {e}")
-        time.sleep(5)
+        time.sleep(2)
 
 
 # ── Local HTTP Server (floating window) ───────────────────────────────────
