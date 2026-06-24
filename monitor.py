@@ -859,35 +859,61 @@ def save_seen_cache(seen):
     except Exception as e:
         log(f"[cache] failed to save: {e}")
 
-def poll_loop():
-    """Poll WATCH_DIR every 5 seconds for new/modified XML and CPR files."""
-    seen = load_seen_cache()  # persist across restarts — prevents re-submitting existing XMLs
-    EXTRA_WATCH_DIRS = load_extra_watch_dirs()  # reload on each start in case config changed
-    ALL_WATCH_DIRS = [WATCH_DIR] + EXTRA_WATCH_DIRS
-    log(f"[poll] watching {len(ALL_WATCH_DIRS)} dir(s): {', '.join(str(d) for d in ALL_WATCH_DIRS)} (loaded {len(seen)} cached entries)")
-    while True:
-        try:
-            for watch_root in ALL_WATCH_DIRS:
-              for path in watch_root.rglob("*"):
-                try:
-                    mtime = path.stat().st_mtime
-                except:
-                    continue
-                if path.suffix.lower() == ".xml":
-                    if seen.get(path) != mtime:
-                        log(f"[poll] xml detected: {path.name}")
-                        threading.Thread(target=handle_xml, args=(path,), daemon=True).start()
+def watch_loop():
+    """Use FSEvents (macOS) / inotify (Linux) for zero-CPU instant file detection."""
+    seen = load_seen_cache()
+    EXTRA_WATCH_DIRS = load_extra_watch_dirs()
+    ALL_WATCH_DIRS_LOCAL = [WATCH_DIR] + EXTRA_WATCH_DIRS
+    log(f"[poll] watching {len(ALL_WATCH_DIRS_LOCAL)} dir(s): {', '.join(str(d) for d in ALL_WATCH_DIRS_LOCAL)} (loaded {len(seen)} cached entries)")
+
+    class Handler(FileSystemEventHandler):
+        def _handle(self, event):
+            if event.is_directory:
+                return
+            path = Path(event.src_path)
+            ext = path.suffix.lower()
+            try:
+                mtime = path.stat().st_mtime
+            except Exception:
+                return
+            if ext == ".xml":
+                if seen.get(path) != mtime:
+                    log(f"[poll] xml detected: {path.name}")
+                    seen[path] = mtime
+                    save_seen_cache(seen)
+                    threading.Thread(target=handle_xml, args=(path,), daemon=True).start()
+            elif ext == ".cpr":
+                if not re.search(r"-\d{2}$", path.stem):
+                    if path not in seen or seen[path] != mtime:
+                        if path in seen:
+                            threading.Thread(target=run_analysis, args=(path,), daemon=True).start()
                         seen[path] = mtime
-                        save_seen_cache(seen)  # persist immediately after processing
-                elif path.suffix.lower() == ".cpr":
-                    if not re.search(r"-\d{2}$", path.stem):
-                        if path not in seen or seen[path] != mtime:
-                            if path in seen:
-                                threading.Thread(target=run_analysis, args=(path,), daemon=True).start()
-                            seen[path] = mtime
-        except Exception as e:
-            log(f"[poll error] {e}")
-        time.sleep(2)
+
+        def on_created(self, event): self._handle(event)
+        def on_modified(self, event): self._handle(event)
+        def on_moved(self, event):
+            # treat move destination as a new file
+            if not event.is_directory:
+                class _E: src_path=event.dest_path; is_directory=False
+                self._handle(_E())
+
+    observer = Observer()
+    handler = Handler()
+    for wd in ALL_WATCH_DIRS_LOCAL:
+        observer.schedule(handler, str(wd), recursive=True)
+    observer.start()
+    log("[poll] FSEvents observer started — zero CPU, instant detection")
+    try:
+        while True:
+            time.sleep(60)  # just keep the thread alive
+    except Exception as e:
+        log(f"[poll error] {e}")
+    finally:
+        observer.stop()
+        observer.join()
+
+# Keep poll_loop as alias so existing call sites work
+poll_loop = watch_loop
 
 
 # ── Local HTTP Server (floating window) ───────────────────────────────────
