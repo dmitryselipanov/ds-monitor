@@ -796,6 +796,10 @@ def run_analysis(cpr_path: Path):
             state["summary"] = f"No active MIDI tracks in {cue_name}."
             return
 
+        # Log first note positions per track for debugging bar offset issues
+        for t in tracks[:5]:
+            first_notes = t['notes'][:3]
+            log(f"[parse] track={t['name']!r} first_note_ticks={[n['position'] for n in first_notes]}")
         passage = describe_passage(tracks)
         result = analyse_with_claude(passage, cue_name)
 
