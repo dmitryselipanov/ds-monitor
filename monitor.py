@@ -62,6 +62,16 @@ def load_extra_watch_dirs():
         log(f"[config] failed to load extra watch dirs: {e}")
     return []
 
+def load_music_start_bar():
+    """Bar number where music starts — notes before this bar are ignored in AI analysis."""
+    try:
+        if DS_CONFIG_PATH.exists():
+            data = json.loads(DS_CONFIG_PATH.read_text())
+            return int(data.get("music_start_bar", 1))
+    except Exception as e:
+        log(f"[config] failed to load music_start_bar: {e}")
+    return 1
+
 EXTRA_WATCH_DIRS = load_extra_watch_dirs()
 ALL_WATCH_DIRS = [WATCH_DIR] + EXTRA_WATCH_DIRS
 
@@ -593,7 +603,7 @@ def extract_midi_tracks(cpr_path: Path) -> list[dict]:
     return result
 
 
-def describe_passage(tracks: list[dict]) -> str:
+def describe_passage(tracks: list[dict], music_start_bar: int = 1) -> str:
     """Convert extracted MIDI tracks into a readable passage description for Claude."""
     if not tracks:
         return "No active MIDI tracks found."
@@ -604,6 +614,7 @@ def describe_passage(tracks: list[dict]) -> str:
 
     beats_per_bar = int(time_sig.split("/")[0]) if "/" in time_sig else 4
     ticks_per_bar = ppq * beats_per_bar
+    start_tick = (music_start_bar - 1) * ticks_per_bar
 
     lines = [f"Tempo: ♩={tempo}, Time signature: {time_sig}\n"]
 
@@ -628,9 +639,11 @@ def describe_passage(tracks: list[dict]) -> str:
         if not notes:
             continue
 
-        # Group notes by bar
+        # Group notes by bar, skipping pre-music content
         bars = {}
         for note in notes:
+            if note["position"] < start_tick:
+                continue
             bar, beat = ticks_to_bar_beat(note["position"])
             if bar not in bars:
                 bars[bar] = []
@@ -800,7 +813,9 @@ def run_analysis(cpr_path: Path):
         for t in tracks[:5]:
             first_notes = t['notes'][:3]
             log(f"[parse] track={t['name']!r} first_note_ticks={[n['position'] for n in first_notes]}")
-        passage = describe_passage(tracks)
+        music_start_bar = load_music_start_bar()
+        log(f"[analysis] music_start_bar={music_start_bar}")
+        passage = describe_passage(tracks, music_start_bar=music_start_bar)
         result = analyse_with_claude(passage, cue_name)
 
         state["status"] = result.get("status", "ok")
