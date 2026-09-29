@@ -426,6 +426,125 @@ def handle_xml(xml_path: Path):
     except Exception as e:
         log(f"[xml error] PUSH FAILED: {e}")
 
+
+# ── Mixdown → Dropbox auto-upload ────────────────────────────────────────
+# Cubase mixdown exports are named "{cue_number} {title} {timecode}.wav" —
+# same string as the Dropbox cue folder under .../Scoring/, plus a trailing
+# timecode. Strip the timecode to get the folder name and drop the file in.
+
+WORKER_URL = "https://ds-note-worker.drumadima.workers.dev"
+TC_SUFFIX_RE = re.compile(r"\s+\d{2}[.:']\d{2}[.:']\d{2}[.:']\d{2}$")
+
+def resolve_project(path: Path):
+    """Match a file path to a project's Supabase record by walking to the folder under the watch root."""
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f"{SB_URL}/rest/v1/projects?select=id,title,cubase_folder_name,dropbox_base_path",
+            headers={"apikey": SB_KEY, "Authorization": f"Bearer {SB_KEY}"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            projects = json.loads(r.read())
+    except Exception as e:
+        log(f"[resolve_project] could not fetch projects: {e}")
+        return None
+
+    active_watch_dir = WATCH_DIR
+    for wd in ALL_WATCH_DIRS:
+        try:
+            path.relative_to(wd)
+            active_watch_dir = wd
+            break
+        except ValueError:
+            continue
+    parts = path.parts
+    watch_parts = active_watch_dir.parts
+    if len(parts) <= len(watch_parts):
+        return None
+    project_folder = parts[len(watch_parts)].lower()
+
+    def _matches(candidate):
+        c = (candidate or '').lower().strip()
+        return bool(c and (c == project_folder or project_folder.startswith(c) or c.startswith(project_folder)))
+
+    for p in projects:
+        if _matches(p.get('cubase_folder_name')) or _matches(p.get('title')):
+            return p
+    for p in projects:
+        for candidate in filter(None, [p.get('cubase_folder_name'), p.get('title')]):
+            if candidate.lower().strip() in [part.lower() for part in parts]:
+                return p
+    return None
+
+def wait_until_stable(path: Path, checks=3, interval=1.5, timeout=120):
+    """Wait until file size stops changing — mixdown export is still being written otherwise."""
+    start = time.time()
+    last_size = -1
+    stable_count = 0
+    while time.time() - start < timeout:
+        try:
+            size = path.stat().st_size
+        except FileNotFoundError:
+            return False
+        if size == last_size and size > 0:
+            stable_count += 1
+            if stable_count >= checks:
+                return True
+        else:
+            stable_count = 0
+        last_size = size
+        time.sleep(interval)
+    return False
+
+def upload_to_dropbox(target_path: str, file_path: Path) -> dict:
+    """POST a file straight to the worker's /dropbox-upload endpoint (multipart)."""
+    import uuid, urllib.request
+    boundary = uuid.uuid4().hex
+    file_bytes = file_path.read_bytes()
+    body = b"".join([
+        f'--{boundary}\r\nContent-Disposition: form-data; name="path"\r\n\r\n{target_path}\r\n'.encode(),
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{file_path.name}"\r\n'
+        f'Content-Type: audio/wav\r\n\r\n'.encode(),
+        file_bytes,
+        f'\r\n--{boundary}--\r\n'.encode(),
+    ])
+    req = urllib.request.Request(
+        f"{WORKER_URL}/dropbox-upload",
+        data=body, method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}
+    )
+    with urllib.request.urlopen(req, timeout=180) as r:
+        return json.loads(r.read())
+
+def handle_mixdown_wav(wav_path: Path):
+    """New WAV export detected under a Mixdown folder — push it to the matching cue's Dropbox folder."""
+    log(f"[mixdown] detected {wav_path.name}")
+    if not wait_until_stable(wav_path):
+        log(f"[mixdown] gave up waiting for stable file size: {wav_path}")
+        return
+    proj = resolve_project(wav_path)
+    if not proj:
+        log(f"[mixdown] no project matched for {wav_path}")
+        return
+    base_path = (proj.get('dropbox_base_path') or '').strip()
+    if not base_path:
+        log(f"[mixdown] project '{proj.get('title')}' has no dropbox_base_path set — skipping upload")
+        return
+    folder_name = TC_SUFFIX_RE.sub("", wav_path.stem).strip()
+    target_path = f"{base_path.rstrip('/')}/Scoring/{folder_name}/{wav_path.name}"
+    log(f"[mixdown] uploading to {target_path}")
+    try:
+        result = upload_to_dropbox(target_path, wav_path)
+        if result.get('ok'):
+            log(f"[mixdown] uploaded OK: {result.get('path')} ({result.get('size')} bytes)")
+        else:
+            log(f"[mixdown] upload failed: {result}")
+    except urllib.error.HTTPError as e:
+        log(f"[mixdown] upload FAILED: {e.code} {e.read().decode()[:300]}")
+    except Exception as e:
+        log(f"[mixdown] upload error: {e}")
+
+
 def diagnose_cpr(cpr_path: Path):
     """Dump bytes around first note record to find track name pattern."""
     data = cpr_path.read_bytes()
@@ -907,6 +1026,13 @@ def watch_loop():
                         if path in seen:
                             threading.Thread(target=run_analysis, args=(path,), daemon=True).start()
                         seen[path] = mtime
+            elif ext == ".wav":
+                if "mixdown" in [p.lower() for p in path.parts]:
+                    if seen.get(path) != mtime:
+                        log(f"[poll] mixdown wav detected: {path.name}")
+                        seen[path] = mtime
+                        save_seen_cache(seen)
+                        threading.Thread(target=handle_mixdown_wav, args=(path,), daemon=True).start()
 
         def on_created(self, event): self._handle(event)
         def on_modified(self, event): self._handle(event)
