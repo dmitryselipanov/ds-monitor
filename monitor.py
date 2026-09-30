@@ -1019,6 +1019,8 @@ def watch_loop():
                 if in_mixdown:
                     log(f"[watch-debug] stat failed: {e}")
                 return
+            if in_mixdown:
+                log(f"[watch-debug] ext={ext!r} mtime={mtime} seen_prev={seen.get(path)!r}")
             if ext == ".xml":
                 if seen.get(path) != mtime:
                     log(f"[poll] xml detected: {path.name}")
@@ -1032,12 +1034,14 @@ def watch_loop():
                             threading.Thread(target=run_analysis, args=(path,), daemon=True).start()
                         seen[path] = mtime
             elif ext == ".wav":
-                if "mixdown" in [p.lower() for p in path.parts]:
+                if in_mixdown:
                     if seen.get(path) != mtime:
                         log(f"[poll] mixdown wav detected: {path.name}")
                         seen[path] = mtime
                         save_seen_cache(seen)
                         threading.Thread(target=handle_mixdown_wav, args=(path,), daemon=True).start()
+                    else:
+                        log(f"[watch-debug] wav skipped — already in seen cache with same mtime")
 
         def on_created(self, event): self._handle(event)
         def on_modified(self, event): self._handle(event)
