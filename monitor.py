@@ -511,13 +511,17 @@ def upload_to_dropbox(target_path: str, file_path: Path) -> dict:
     req = urllib.request.Request(
         f"{WORKER_URL}/dropbox-upload",
         data=body, method="POST",
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        }
     )
     with urllib.request.urlopen(req, timeout=180) as r:
         return json.loads(r.read())
 
 def handle_mixdown_wav(wav_path: Path):
     """New WAV export detected under a Mixdown folder — push it to the matching cue's Dropbox folder."""
+    import urllib.error
     log(f"[mixdown] detected {wav_path.name}")
     if not wait_until_stable(wav_path):
         log(f"[mixdown] gave up waiting for stable file size: {wav_path}")
