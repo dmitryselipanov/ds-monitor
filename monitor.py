@@ -1006,13 +1006,18 @@ def watch_loop():
 
     class Handler(FileSystemEventHandler):
         def _handle(self, event):
+            path = Path(event.src_path)
+            in_mixdown = "mixdown" in [p.lower() for p in path.parts]
+            if in_mixdown:
+                log(f"[watch-debug] {type(event).__name__} is_dir={event.is_directory} path={path}")
             if event.is_directory:
                 return
-            path = Path(event.src_path)
             ext = path.suffix.lower()
             try:
                 mtime = path.stat().st_mtime
-            except Exception:
+            except Exception as e:
+                if in_mixdown:
+                    log(f"[watch-debug] stat failed: {e}")
                 return
             if ext == ".xml":
                 if seen.get(path) != mtime:
