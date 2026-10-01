@@ -434,6 +434,7 @@ def handle_xml(xml_path: Path):
 
 WORKER_URL = "https://ds-note-worker.drumadima.workers.dev"
 TC_SUFFIX_RE = re.compile(r"\s+\d{2}[.:']\d{2}[.:']\d{2}[.:']\d{2}$")
+VERSION_SUFFIX_RE = re.compile(r"\s+V\d+(\.\d+)*\s*$", re.IGNORECASE)
 
 def resolve_project(path: Path):
     """Match a file path to a project's Supabase record by walking to the folder under the watch root."""
@@ -535,6 +536,7 @@ def handle_mixdown_wav(wav_path: Path):
         log(f"[mixdown] project '{proj.get('title')}' has no dropbox_base_path set — skipping upload")
         return
     folder_name = TC_SUFFIX_RE.sub("", wav_path.stem).strip()
+    folder_name = VERSION_SUFFIX_RE.sub("", folder_name).strip()
     target_path = f"{base_path.rstrip('/')}/Scoring/{folder_name}/{wav_path.name}"
     log(f"[mixdown] uploading to {target_path}")
     try:
