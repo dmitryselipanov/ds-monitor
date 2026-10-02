@@ -523,32 +523,36 @@ def upload_to_dropbox(target_path: str, file_path: Path) -> dict:
 def handle_mixdown_wav(wav_path: Path):
     """New WAV export detected under a Mixdown folder — push it to the matching cue's Dropbox folder."""
     import urllib.error
-    log(f"[mixdown] detected {wav_path.name}")
-    if not wait_until_stable(wav_path):
-        log(f"[mixdown] gave up waiting for stable file size: {wav_path}")
-        return
-    proj = resolve_project(wav_path)
-    if not proj:
-        log(f"[mixdown] no project matched for {wav_path}")
-        return
-    base_path = (proj.get('dropbox_base_path') or '').strip()
-    if not base_path:
-        log(f"[mixdown] project '{proj.get('title')}' has no dropbox_base_path set — skipping upload")
-        return
-    folder_name = TC_SUFFIX_RE.sub("", wav_path.stem).strip()
-    folder_name = VERSION_SUFFIX_RE.sub("", folder_name).strip()
-    target_path = f"{base_path.rstrip('/')}/Scoring/{folder_name}/{wav_path.name}"
-    log(f"[mixdown] uploading to {target_path}")
     try:
-        result = upload_to_dropbox(target_path, wav_path)
-        if result.get('ok'):
-            log(f"[mixdown] uploaded OK: {result.get('path')} ({result.get('size')} bytes)")
-        else:
-            log(f"[mixdown] upload failed: {result}")
-    except urllib.error.HTTPError as e:
-        log(f"[mixdown] upload FAILED: {e.code} {e.read().decode()[:300]}")
+        log(f"[mixdown] detected {wav_path.name}")
+        if not wait_until_stable(wav_path):
+            log(f"[mixdown] gave up waiting for stable file size: {wav_path}")
+            return
+        proj = resolve_project(wav_path)
+        if not proj:
+            log(f"[mixdown] no project matched for {wav_path}")
+            return
+        base_path = (proj.get('dropbox_base_path') or '').strip()
+        if not base_path:
+            log(f"[mixdown] project '{proj.get('title')}' has no dropbox_base_path set — skipping upload")
+            return
+        folder_name = TC_SUFFIX_RE.sub("", wav_path.stem).strip()
+        folder_name = VERSION_SUFFIX_RE.sub("", folder_name).strip()
+        target_path = f"{base_path.rstrip('/')}/Scoring/{folder_name}/{wav_path.name}"
+        log(f"[mixdown] uploading to {target_path}")
+        try:
+            result = upload_to_dropbox(target_path, wav_path)
+            if result.get('ok'):
+                log(f"[mixdown] uploaded OK: {result.get('path')} ({result.get('size')} bytes)")
+            else:
+                log(f"[mixdown] upload failed: {result}")
+        except urllib.error.HTTPError as e:
+            log(f"[mixdown] upload FAILED: {e.code} {e.read().decode()[:300]}")
     except Exception as e:
-        log(f"[mixdown] upload error: {e}")
+        log(f"[mixdown] error: {e}")
+    finally:
+        with _mixdown_inflight_lock:
+            _mixdown_inflight.discard(wav_path)
 
 
 def diagnose_cpr(cpr_path: Path):
@@ -959,6 +963,8 @@ def run_analysis(cpr_path: Path):
 
 SEEN_CACHE_PATH = Path.home() / ".ds-monitor-seen.json"
 _active_project_id = None
+_mixdown_inflight = set()
+_mixdown_inflight_lock = threading.Lock()
 
 def fetch_project_id_for_track(track_name):
     """Try to find project_id by matching track cue number against Supabase cues."""
@@ -1041,11 +1047,20 @@ def watch_loop():
                         seen[path] = mtime
             elif ext == ".wav":
                 if in_mixdown:
-                    if seen.get(path) != mtime:
+                    with _mixdown_inflight_lock:
+                        already_inflight = path in _mixdown_inflight
+                        if not already_inflight and seen.get(path) != mtime:
+                            _mixdown_inflight.add(path)
+                            started = True
+                        else:
+                            started = False
+                    if started:
                         log(f"[poll] mixdown wav detected: {path.name}")
                         seen[path] = mtime
                         save_seen_cache(seen)
                         threading.Thread(target=handle_mixdown_wav, args=(path,), daemon=True).start()
+                    elif already_inflight:
+                        log(f"[watch-debug] wav skipped — upload already in progress for this path")
                     else:
                         log(f"[watch-debug] wav skipped — already in seen cache with same mtime")
 
