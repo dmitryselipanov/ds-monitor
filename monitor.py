@@ -328,14 +328,69 @@ def push_pending_imports(xml_path: Path, cues: list[dict]):
         log(f"[xml error] PUSH FAILED: {e}")
 
 
+XML_SETTLE_SECONDS = 2.0  # quiet time after the last write event before an XML is read
+_xml_timers = {}
+_xml_timers_lock = threading.Lock()
+
+
+def schedule_xml(xml_path: Path):
+    """Debounce XML events. Cubase fires several create/modify events while it writes
+    one export; reading on the first one pushed a cut-off file (plus duplicates).
+    Each event restarts a per-file timer, so handle_xml runs once, after writes stop."""
+    with _xml_timers_lock:
+        old = _xml_timers.pop(xml_path, None)
+        if old:
+            old.cancel()
+        t = threading.Timer(XML_SETTLE_SECONDS, _run_settled_xml, args=(xml_path,))
+        t.daemon = True
+        _xml_timers[xml_path] = t
+        t.start()
+
+
+def _run_settled_xml(xml_path: Path):
+    with _xml_timers_lock:
+        _xml_timers.pop(xml_path, None)
+    handle_xml(xml_path)
+
+
+def wait_for_stable_file(path: Path, interval=0.5, checks=3, timeout=60) -> bool:
+    """True once size and mtime are unchanged for `checks` polls in a row."""
+    last, same = None, 0
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            st = path.stat()
+        except FileNotFoundError:
+            return False
+        cur = (st.st_size, st.st_mtime)
+        if cur == last:
+            same += 1
+            if same >= checks:
+                return True
+        else:
+            last, same = cur, 0
+        time.sleep(interval)
+    return False
+
+
 def handle_xml(xml_path: Path):
     """Push raw XML content to pending_imports for DS Scoring to parse."""
     log(f"[xml detected] {xml_path.name} (full: {xml_path})")
     log(f"[xml] inside watch? {any(str(xml_path).lower().startswith(str(wd).lower()) for wd in ALL_WATCH_DIRS)}")
+    if not wait_for_stable_file(xml_path):
+        log(f"[xml] {xml_path.name} still changing or gone — skipped")
+        return
     try:
         raw_xml = xml_path.read_text(encoding='utf-8', errors='ignore')
     except Exception as e:
         log(f"[xml error] could not read: {e}")
+        return
+    # A cut-off file pushed from here shows up in DS Scoring as an unreadable import
+    import xml.etree.ElementTree as ET
+    try:
+        ET.fromstring(raw_xml)
+    except ET.ParseError as e:
+        log(f"[xml] {xml_path.name} is not complete XML ({e}) — skipped, will retry on next write")
         return
 
     try:
@@ -900,7 +955,7 @@ def watch_loop():
                     log(f"[poll] xml detected: {path.name}")
                     seen[path] = mtime
                     save_seen_cache(seen)
-                    threading.Thread(target=handle_xml, args=(path,), daemon=True).start()
+                    schedule_xml(path)
             elif ext == ".cpr":
                 if not re.search(r"-\d{2}$", path.stem):
                     if path not in seen or seen[path] != mtime:
