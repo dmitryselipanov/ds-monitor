@@ -486,7 +486,8 @@ MONITOR_CUES_URL = "https://ds-note-worker.drumadima.workers.dev/monitor-cues"
 CUE_NAMES_TTL = 60
 MIXDOWN_WAITING_PATH = Path.home() / "Library" / "Caches" / "ds-monitor" / "mixdown-waiting.json"
 MIXDOWN_WAITING_DAYS = 14
-_cue_names_cache = {}       # project id -> (fetched at, ["2m20 Our Own Church", ...])
+_cue_names_cache = {}       # project id -> (fetched at, ["2m20 Our Own Church", ...] or None)
+_cue_names_error = None     # last failure logged, so a long outage is logged once
 
 
 def fetch_cue_names(project):
@@ -495,6 +496,7 @@ def fetch_cue_names(project):
     Cues are hidden from the anon key, so they come through the Worker with
     DS_MONITOR_SECRET (the Worker's MONITOR_SECRET), set in the LaunchAgent plist.
     """
+    global _cue_names_error
     secret = os.environ.get("DS_MONITOR_SECRET", "").strip()
     if not secret or not project.get("id"):
         return None
@@ -510,10 +512,13 @@ def fetch_cue_names(project):
             headers={"Authorization": f"Bearer {secret}", "User-Agent": "ds-monitor"})
         with urllib.request.urlopen(req, timeout=10) as r:
             cues = json.loads(r.read())["cues"]
+        names = [f"{c['cue_number'].strip()} {c['title'].strip()}" for c in cues]
+        _cue_names_error = None
     except Exception as e:
-        log(f"[mixdown] couldn't read DS Scoring cue titles ({e}) — matching Dropbox folder names only")
-        return None
-    names = [f"{c['cue_number'].strip()} {c['title'].strip()}" for c in cues]
+        if str(e) != _cue_names_error:
+            _cue_names_error = str(e)
+            log(f"[mixdown] couldn't read DS Scoring cue titles ({e}) — matching Dropbox folder names only")
+        names = None
     _cue_names_cache[project["id"]] = (time.time(), names)
     return names
 
