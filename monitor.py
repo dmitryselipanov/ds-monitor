@@ -506,7 +506,8 @@ def fetch_cue_names(project):
         import urllib.parse
         req = urllib.request.Request(
             f"{MONITOR_CUES_URL}?{urllib.parse.urlencode({'project_id': project['id']})}",
-            headers={"Authorization": f"Bearer {secret}"})
+            # Cloudflare refuses urllib's default User-Agent (error 1010).
+            headers={"Authorization": f"Bearer {secret}", "User-Agent": "ds-monitor"})
         with urllib.request.urlopen(req, timeout=10) as r:
             cues = json.loads(r.read())["cues"]
     except Exception as e:
