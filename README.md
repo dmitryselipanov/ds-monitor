@@ -35,19 +35,28 @@ bounces are published as below.
 
 Only review-ready mixes reach Dropbox. A WAV exported to a Cubase `Mixdown`
 folder is copied into the project's local Dropbox cue folder (and synced by the
-Dropbox app) only when its name, minus version and timecode, is exactly the name
-of an existing cue folder under `Scoring/` (or `Scoring/EPxx/`):
+Dropbox app) only when its name, minus version and timecode, is exactly
+`{cue} {title}` of a cue in DS Scoring:
 
 - `1m02 City Pulse V1.1 01.01.57.22.wav` → `Scoring/1m02 City Pulse/`
+- first export of a cue with no folder yet → the folder is created
+  (`Scoring/EPxx/` in projects laid out by episode)
+- cue folder still named after an old title → goes into that folder; the log
+  suggests renaming it
 - `1m02 City Pulse - NO SAX.wav` → stays local (production version)
-- a cue with no Dropbox folder, or a folder named after an old title → stays local
 
-No folders are created; DS Blueprint scaffolds them from DS Scoring. WAVs
-already in the cue folder move to `Prev Versions/` first. There is no size
-limit. Monitor waits until the export is really finished — unchanged, header
-sizes written, and no longer open in Cubase — and copies again if the file
-changes later. The log says why any WAV was not published. The original
-stays in `Mixdown`.
+Cue titles come from the Worker's `/monitor-cues`, which needs
+`DS_MONITOR_SECRET` in the LaunchAgent plist (the Worker's `MONITOR_SECRET`).
+Without it, or when the Worker can't be reached, the name must instead match an
+existing cue folder under `Scoring/` exactly, and nothing is created.
+
+A skipped WAV is rechecked every minute for 14 days (list kept in
+`~/Library/Caches/ds-monitor/mixdown-waiting.json`), so it publishes as soon as
+its cue is added to DS Scoring, without exporting again. WAVs already in the
+cue folder move to `Prev Versions/` first. There is no size limit. Monitor
+waits until the export is really finished — unchanged, header sizes written,
+and no longer open in Cubase — and copies again if the file changes later. The
+log says why any WAV was not published. The original stays in `Mixdown`.
 
 Orchestration assistant for Cubase. Watches `~/Documents/projects` for CPR saves, extracts active MIDI tracks, and runs them through Claude for orchestration feedback.
 

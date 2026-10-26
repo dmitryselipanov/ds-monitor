@@ -24,9 +24,9 @@ class PublishMixdownTests(unittest.TestCase):
         folder.mkdir(parents=True)
         return folder
 
-    def publish(self, name, data=None):
+    def publish(self, name, data=None, cue_names=None):
         return publish_mixdown(Path("/x/Mixdown") / name, data or cubase_wav(bytes(1000)), self.project,
-                               self.logs.append, home=self.home, staging_dir=self.staging)
+                               self.logs.append, cue_names=cue_names, home=self.home, staging_dir=self.staging)
 
     def test_review_mix_goes_into_its_cue_folder(self):
         folder = self.cue_folder("1m01 Opening")
@@ -49,6 +49,47 @@ class PublishMixdownTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in self.scoring.iterdir()),
                          ["1m02 City Pulse", "1m02 City Pulse - FLUTE GUIDE"])
         self.assertEqual([p for p in self.scoring.rglob("*.wav")], [])
+
+    def test_first_export_of_a_ds_scoring_cue_creates_its_folder(self):
+        dest = self.publish("2m19 Chaos 02.23.52.19.wav", cue_names=["2m19 Chaos", "2m20 Our Own Church"])
+        self.assertEqual(dest, self.scoring / "2m19 Chaos" / "2m19 Chaos 02.23.52.19.wav")
+        self.assertIn(f"[mixdown] created cue folder {self.scoring / '2m19 Chaos'}", self.logs)
+
+    def test_new_folder_uses_ds_scoring_spelling_and_the_episode_layout(self):
+        self.cue_folder("EP01")
+        dest = self.publish("2m26 i’ll do what i have to.wav", cue_names=["2m26 I'll Do What I Have To"])
+        self.assertEqual(dest.parent, self.scoring / "EP02" / "2m26 I'll Do What I Have To")
+
+    def test_ds_scoring_name_goes_into_a_folder_with_an_old_title(self):
+        folder = self.cue_folder("2m20 Your Own Church")
+        dest = self.publish("2m20 Our Own Church 02.26.49.02.wav", cue_names=["2m20 Our Own Church"])
+        self.assertEqual(dest.parent, folder)
+        self.assertEqual([p.name for p in self.scoring.iterdir()], ["2m20 Your Own Church"])
+        self.assertTrue(any("still named" in line for line in self.logs))
+
+    def test_ds_scoring_name_skips_variant_folders(self):
+        main = self.cue_folder("1m02 Old Title")
+        self.cue_folder("1m02 City Pulse - FLUTE GUIDE")
+        self.assertEqual(self.publish("1m02 City Pulse.wav", cue_names=["1m02 City Pulse"]).parent, main)
+
+    def test_ds_scoring_name_with_two_candidate_folders_stays_local(self):
+        self.cue_folder("1m02 Old Title")
+        self.cue_folder("1m02 Older Title")
+        self.assertIsNone(self.publish("1m02 City Pulse.wav", cue_names=["1m02 City Pulse"]))
+
+    def test_variant_of_a_ds_scoring_cue_stays_local_and_creates_nothing(self):
+        for name in ["2m19 Chaos - NO SAX.wav", "2m19 Chaos Alt.wav"]:
+            self.assertIsNone(self.publish(name, cue_names=["2m19 Chaos"]), name)
+        self.assertEqual(list(self.scoring.iterdir()), [])
+
+    def test_variant_with_its_own_folder_stays_local_when_ds_scoring_knows_the_cue(self):
+        self.cue_folder("2m19 Chaos - NO SAX")
+        self.assertIsNone(self.publish("2m19 Chaos - NO SAX.wav", cue_names=["2m19 Chaos"]))
+
+    def test_cue_missing_from_ds_scoring_falls_back_to_its_folder(self):
+        folder = self.cue_folder("2mX Dualism")
+        self.assertEqual(self.publish("2mX Dualism.wav", cue_names=["2m19 Chaos"]).parent, folder)
+        self.assertIsNone(self.publish("2mY Unknown.wav", cue_names=["2m19 Chaos"]))
 
     def test_cue_without_dropbox_folder_is_not_published_or_created(self):
         self.assertIsNone(self.publish("2m19 Chaos 02.23.52.19.wav"))

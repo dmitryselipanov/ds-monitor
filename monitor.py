@@ -45,7 +45,8 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from wav_check import read_finished_wav
 from video_publisher import VideoPublisher, cue_from_filename
-from mixdown_publisher import publish_mixdown
+from mixdown_publisher import publish_mixdown, review_folder
+from video_publisher import local_dropbox_project
 
 try:
     import rtmidi
@@ -481,6 +482,104 @@ def resolve_project(path: Path):
                 return p
     return None
 
+MONITOR_CUES_URL = "https://ds-note-worker.drumadima.workers.dev/monitor-cues"
+CUE_NAMES_TTL = 60
+MIXDOWN_WAITING_PATH = Path.home() / "Library" / "Caches" / "ds-monitor" / "mixdown-waiting.json"
+MIXDOWN_WAITING_DAYS = 14
+_cue_names_cache = {}       # project id -> (fetched at, ["2m20 Our Own Church", ...])
+
+
+def fetch_cue_names(project):
+    """The project's "{cue} {title}" names from DS Scoring, or None if they can't be read.
+
+    Cues are hidden from the anon key, so they come through the Worker with
+    DS_MONITOR_SECRET (the Worker's MONITOR_SECRET), set in the LaunchAgent plist.
+    """
+    secret = os.environ.get("DS_MONITOR_SECRET", "").strip()
+    if not secret or not project.get("id"):
+        return None
+    cached = _cue_names_cache.get(project["id"])
+    if cached and time.time() - cached[0] < CUE_NAMES_TTL:
+        return cached[1]
+    try:
+        import urllib.request
+        import urllib.parse
+        req = urllib.request.Request(
+            f"{MONITOR_CUES_URL}?{urllib.parse.urlencode({'project_id': project['id']})}",
+            headers={"Authorization": f"Bearer {secret}"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            cues = json.loads(r.read())["cues"]
+    except Exception as e:
+        log(f"[mixdown] couldn't read DS Scoring cue titles ({e}) — matching Dropbox folder names only")
+        return None
+    names = [f"{c['cue_number'].strip()} {c['title'].strip()}" for c in cues]
+    _cue_names_cache[project["id"]] = (time.time(), names)
+    return names
+
+
+def _load_mixdown_waiting():
+    try:
+        return {Path(p): tuple(v) for p, v in json.loads(MIXDOWN_WAITING_PATH.read_text()).items()}
+    except Exception:
+        return {}
+
+
+def _save_mixdown_waiting():
+    try:
+        MIXDOWN_WAITING_PATH.parent.mkdir(parents=True, exist_ok=True)
+        MIXDOWN_WAITING_PATH.write_text(json.dumps({str(p): v for p, v in _mixdown_waiting.items()}))
+    except Exception as e:
+        log(f"[mixdown] couldn't save the list of unpublished mixdowns: {e}")
+
+
+def _set_mixdown_waiting(wav_path, identity):
+    with _mixdown_inflight_lock:
+        if identity is None:
+            if _mixdown_waiting.pop(wav_path, None) is None:
+                return
+        else:
+            _mixdown_waiting[wav_path] = list(identity)
+        _save_mixdown_waiting()
+
+
+def retry_waiting_mixdowns(video_publisher=None):
+    """Publish skipped mixdowns once their cue appears in DS Scoring or Dropbox.
+
+    Only the name check runs here; the WAV is read again only when it would now
+    be published. Production versions stay on the list until they age out.
+    """
+    with _mixdown_inflight_lock:
+        waiting = list(_mixdown_waiting.items())
+    projects = {}  # one project lookup per Mixdown folder per pass
+    for wav_path, identity in waiting:
+        try:
+            st = wav_path.stat()
+        except OSError:
+            _set_mixdown_waiting(wav_path, None)
+            continue
+        if [st.st_size, st.st_mtime_ns] != list(identity) or time.time() - st.st_mtime > MIXDOWN_WAITING_DAYS * 86400:
+            _set_mixdown_waiting(wav_path, None)  # a change is picked up by the watcher
+            continue
+        try:
+            if wav_path.parent not in projects:
+                projects[wav_path.parent] = resolve_project(wav_path)
+            proj = projects[wav_path.parent]
+            if not proj or not (proj.get("dropbox_base_path") or "").strip():
+                continue
+            scoring = local_dropbox_project(proj["dropbox_base_path"].strip()) / "Scoring"
+            if review_folder(scoring, wav_path, fetch_cue_names(proj)) is None:
+                continue
+        except Exception as e:
+            log(f"[mixdown] retry check failed for {wav_path.name}: {e}")
+            continue
+        with _mixdown_inflight_lock:
+            if wav_path in _mixdown_inflight:
+                continue
+            _mixdown_inflight.add(wav_path)
+        log(f"[mixdown] {wav_path.name} now has a place in Dropbox — publishing")
+        threading.Thread(target=run_mixdown_upload, args=(wav_path, video_publisher), daemon=True).start()
+
+
 def handle_mixdown_wav(wav_path: Path, video_publisher=None):
     """New WAV export detected under a Mixdown folder — publish it to the matching cue's Dropbox folder."""
     try:
@@ -508,12 +607,14 @@ def handle_mixdown_wav(wav_path: Path, video_publisher=None):
         except ValueError:
             log(f"[mixdown] {wav_path.name} doesn't start with a cue number and title — not published")
             return
-        destination = publish_mixdown(wav_path, wav_bytes, proj, log)
+        destination = publish_mixdown(wav_path, wav_bytes, proj, log, cue_names=fetch_cue_names(proj))
         if destination is None:
-            log(f"[mixdown] {wav_path.name} isn't named exactly like its cue's Dropbox folder — "
-                f"treated as a production version, not published")
+            log(f"[mixdown] {wav_path.name} isn't named exactly like a DS Scoring cue or its Dropbox folder — "
+                f"treated as a production version, not published (rechecked every minute in case the cue is added)")
+            _set_mixdown_waiting(wav_path, identity)
             return
         _mixdown_uploaded[wav_path] = identity
+        _set_mixdown_waiting(wav_path, None)
         log(f"[mixdown] published {len(wav_bytes)} bytes to Dropbox: {destination}")
     except Exception as e:
         log(f"[mixdown] error: {e}")
@@ -951,6 +1052,7 @@ _mixdown_inflight = set()   # paths with an upload thread running
 _mixdown_dirty = set()      # in-flight paths that changed again; re-run when done
 _mixdown_uploaded = {}      # path -> (size, mtime_ns) last uploaded, avoids duplicate Prev Versions
 _mixdown_inflight_lock = threading.Lock()
+_mixdown_waiting = _load_mixdown_waiting()  # path -> [size, mtime_ns] of mixdowns skipped for their name
 
 def fetch_project_id_for_track(track_name):
     """Try to find project_id by matching track cue number against Supabase cues."""
@@ -1075,6 +1177,7 @@ def watch_loop():
         while True:
             time.sleep(60)
             video_publisher.scan_staging()  # retry exports missed during a restart or network outage
+            retry_waiting_mixdowns(video_publisher)
     except Exception as e:
         log(f"[poll error] {e}")
     finally:
