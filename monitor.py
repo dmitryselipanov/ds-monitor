@@ -15,10 +15,15 @@ import threading
 from pathlib import Path
 from datetime import datetime
 
+LOG_PATH = Path.home() / "Library" / "Logs" / "ds-monitor.log"
+LOG_MAX_BYTES = 10 * 1024 * 1024
+
 def log(msg):
     """Write directly to log file, bypassing stdout buffering."""
     try:
-        with open("/tmp/ds-monitor.log", "a") as f:
+        if LOG_PATH.exists() and LOG_PATH.stat().st_size > LOG_MAX_BYTES:
+            LOG_PATH.replace(LOG_PATH.with_suffix(".log.1"))
+        with open(LOG_PATH, "a") as f:
             f.write(f"{datetime.now().strftime('%H:%M:%S')} {msg}\n")
             f.flush()
     except:
@@ -38,6 +43,7 @@ except ImportError:
 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from wav_check import read_finished_wav
 
 try:
     import rtmidi
@@ -477,31 +483,10 @@ def resolve_project(path: Path):
                 return p
     return None
 
-def wait_until_stable(path: Path, checks=3, interval=1.5, timeout=120):
-    """Wait until file size stops changing — mixdown export is still being written otherwise."""
-    start = time.time()
-    last_size = -1
-    stable_count = 0
-    while time.time() - start < timeout:
-        try:
-            size = path.stat().st_size
-        except FileNotFoundError:
-            return False
-        if size == last_size and size > 0:
-            stable_count += 1
-            if stable_count >= checks:
-                return True
-        else:
-            stable_count = 0
-        last_size = size
-        time.sleep(interval)
-    return False
-
-def upload_to_dropbox(target_path: str, file_path: Path) -> dict:
-    """POST a file straight to the worker's /dropbox-upload endpoint (multipart)."""
+def upload_to_dropbox(target_path: str, file_path: Path, file_bytes: bytes) -> dict:
+    """POST already-read file bytes straight to the worker's /dropbox-upload endpoint (multipart)."""
     import uuid, urllib.request
     boundary = uuid.uuid4().hex
-    file_bytes = file_path.read_bytes()
     body = b"".join([
         f'--{boundary}\r\nContent-Disposition: form-data; name="path"\r\n\r\n{target_path}\r\n'.encode(),
         f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{file_path.name}"\r\n'
@@ -525,8 +510,12 @@ def handle_mixdown_wav(wav_path: Path):
     import urllib.error
     try:
         log(f"[mixdown] detected {wav_path.name}")
-        if not wait_until_stable(wav_path):
-            log(f"[mixdown] gave up waiting for stable file size: {wav_path}")
+        finished = read_finished_wav(wav_path, log)
+        if not finished:
+            return
+        wav_bytes, identity = finished
+        if _mixdown_uploaded.get(wav_path) == identity:
+            log(f"[mixdown] {wav_path.name} unchanged since last upload — skipping")
             return
         proj = resolve_project(wav_path)
         if not proj:
@@ -541,8 +530,9 @@ def handle_mixdown_wav(wav_path: Path):
         target_path = f"{base_path.rstrip('/')}/Scoring/{folder_name}/{wav_path.name}"
         log(f"[mixdown] uploading to {target_path}")
         try:
-            result = upload_to_dropbox(target_path, wav_path)
+            result = upload_to_dropbox(target_path, wav_path, wav_bytes)
             if result.get('ok'):
+                _mixdown_uploaded[wav_path] = identity
                 log(f"[mixdown] uploaded OK: {result.get('path')} ({result.get('size')} bytes)")
             else:
                 log(f"[mixdown] upload failed: {result}")
@@ -550,9 +540,26 @@ def handle_mixdown_wav(wav_path: Path):
             log(f"[mixdown] upload FAILED: {e.code} {e.read().decode()[:300]}")
     except Exception as e:
         log(f"[mixdown] error: {e}")
-    finally:
+
+
+def run_mixdown_upload(wav_path: Path):
+    """Upload a mixdown, then again if it changed while that was running.
+
+    Events that arrive mid-upload mark the path dirty instead of being dropped,
+    so Cubase's final header write always gets uploaded.
+    """
+    while True:
+        handle_mixdown_wav(wav_path)
         with _mixdown_inflight_lock:
-            _mixdown_inflight.discard(wav_path)
+            if wav_path in _mixdown_dirty:
+                _mixdown_dirty.discard(wav_path)
+                rerun = True
+            else:
+                _mixdown_inflight.discard(wav_path)
+                rerun = False
+        if not rerun:
+            return
+        log(f"[mixdown] {wav_path.name} changed during upload — checking it again")
 
 
 def diagnose_cpr(cpr_path: Path):
@@ -963,7 +970,9 @@ def run_analysis(cpr_path: Path):
 
 SEEN_CACHE_PATH = Path.home() / ".ds-monitor-seen.json"
 _active_project_id = None
-_mixdown_inflight = set()
+_mixdown_inflight = set()   # paths with an upload thread running
+_mixdown_dirty = set()      # in-flight paths that changed again; re-run when done
+_mixdown_uploaded = {}      # path -> (size, mtime_ns) last uploaded, avoids duplicate Prev Versions
 _mixdown_inflight_lock = threading.Lock()
 
 def fetch_project_id_for_track(track_name):
@@ -1047,20 +1056,22 @@ def watch_loop():
                         seen[path] = mtime
             elif ext == ".wav":
                 if in_mixdown:
+                    changed = seen.get(path) != mtime
                     with _mixdown_inflight_lock:
                         already_inflight = path in _mixdown_inflight
-                        if not already_inflight and seen.get(path) != mtime:
+                        started = changed and not already_inflight
+                        if started:
                             _mixdown_inflight.add(path)
-                            started = True
-                        else:
-                            started = False
-                    if started:
-                        log(f"[poll] mixdown wav detected: {path.name}")
+                        elif changed:
+                            _mixdown_dirty.add(path)
+                    if changed:
                         seen[path] = mtime
                         save_seen_cache(seen)
-                        threading.Thread(target=handle_mixdown_wav, args=(path,), daemon=True).start()
-                    elif already_inflight:
-                        log(f"[watch-debug] wav skipped — upload already in progress for this path")
+                    if started:
+                        log(f"[poll] mixdown wav detected: {path.name}")
+                        threading.Thread(target=run_mixdown_upload, args=(path,), daemon=True).start()
+                    elif changed:
+                        log(f"[watch-debug] wav changed during upload — will re-check when it finishes")
                     else:
                         log(f"[watch-debug] wav skipped — already in seen cache with same mtime")
 
