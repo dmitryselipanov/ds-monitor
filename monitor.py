@@ -44,6 +44,7 @@ except ImportError:
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from wav_check import read_finished_wav
+from video_publisher import VideoPublisher
 
 try:
     import rtmidi
@@ -505,7 +506,7 @@ def upload_to_dropbox(target_path: str, file_path: Path, file_bytes: bytes) -> d
     with urllib.request.urlopen(req, timeout=180) as r:
         return json.loads(r.read())
 
-def handle_mixdown_wav(wav_path: Path):
+def handle_mixdown_wav(wav_path: Path, video_publisher=None):
     """New WAV export detected under a Mixdown folder — push it to the matching cue's Dropbox folder."""
     import urllib.error
     try:
@@ -516,6 +517,9 @@ def handle_mixdown_wav(wav_path: Path):
         wav_bytes, identity = finished
         if _mixdown_uploaded.get(wav_path) == identity:
             log(f"[mixdown] {wav_path.name} unchanged since last upload — skipping")
+            return
+        if video_publisher and video_publisher.is_video_render_wav(wav_path):
+            log(f"[mixdown] skipped video render companion WAV: {wav_path}")
             return
         proj = resolve_project(wav_path)
         if not proj:
@@ -542,14 +546,14 @@ def handle_mixdown_wav(wav_path: Path):
         log(f"[mixdown] error: {e}")
 
 
-def run_mixdown_upload(wav_path: Path):
+def run_mixdown_upload(wav_path: Path, video_publisher=None):
     """Upload a mixdown, then again if it changed while that was running.
 
     Events that arrive mid-upload mark the path dirty instead of being dropped,
     so Cubase's final header write always gets uploaded.
     """
     while True:
-        handle_mixdown_wav(wav_path)
+        handle_mixdown_wav(wav_path, video_publisher)
         with _mixdown_inflight_lock:
             if wav_path in _mixdown_dirty:
                 _mixdown_dirty.discard(wav_path)
@@ -1024,6 +1028,8 @@ def watch_loop():
     EXTRA_WATCH_DIRS = load_extra_watch_dirs()
     ALL_WATCH_DIRS_LOCAL = [WATCH_DIR] + EXTRA_WATCH_DIRS
     log(f"[poll] watching {len(ALL_WATCH_DIRS_LOCAL)} dir(s): {', '.join(str(d) for d in ALL_WATCH_DIRS_LOCAL)} (loaded {len(seen)} cached entries)")
+    video_publisher = VideoPublisher(ALL_WATCH_DIRS_LOCAL, resolve_project, log)
+    video_publisher.scan_staging()
 
     class Handler(FileSystemEventHandler):
         def _handle(self, event):
@@ -1032,6 +1038,8 @@ def watch_loop():
             if in_mixdown:
                 log(f"[watch-debug] {type(event).__name__} is_dir={event.is_directory} path={path}")
             if event.is_directory:
+                return
+            if video_publisher.schedule(path):
                 return
             ext = path.suffix.lower()
             try:
@@ -1069,7 +1077,8 @@ def watch_loop():
                         save_seen_cache(seen)
                     if started:
                         log(f"[poll] mixdown wav detected: {path.name}")
-                        threading.Thread(target=run_mixdown_upload, args=(path,), daemon=True).start()
+                        threading.Thread(target=run_mixdown_upload,
+                                         args=(path, video_publisher), daemon=True).start()
                     elif changed:
                         log(f"[watch-debug] wav changed during upload — will re-check when it finishes")
                     else:
@@ -1091,7 +1100,8 @@ def watch_loop():
     log("[poll] FSEvents observer started — zero CPU, instant detection")
     try:
         while True:
-            time.sleep(60)  # just keep the thread alive
+            time.sleep(60)
+            video_publisher.scan_staging()  # retry exports missed during a restart or network outage
     except Exception as e:
         log(f"[poll error] {e}")
     finally:
