@@ -35,6 +35,7 @@ class PublishMixdownTests(unittest.TestCase):
         self.assertEqual(dest, folder / "1m01 Opening 01.00.01.18.wav")
         self.assertEqual(dest.read_bytes(), data)
         self.assertEqual(list(self.staging.iterdir()), [])  # no staging leftovers
+        self.assertEqual(dest.stat().st_mode & 0o777, 0o644)
 
     def test_version_and_timecode_are_ignored_when_matching(self):
         folder = self.cue_folder("1m02 Chapter 02 - Audition")

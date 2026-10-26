@@ -136,6 +136,7 @@ def publish_mixdown(wav_path: Path, wav_bytes: bytes, project: dict, log, *, cue
                 f.write(wav_bytes)
                 f.flush()
                 os.fsync(f.fileno())
+            os.chmod(tmp, 0o644)  # mkstemp makes it private to this user
             old_wavs = [p for p in folder.iterdir()
                         if p.is_file() and not p.is_symlink() and p.suffix.lower() == ".wav"]
             if old_wavs:
