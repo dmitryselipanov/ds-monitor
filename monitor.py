@@ -44,7 +44,8 @@ except ImportError:
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from wav_check import read_finished_wav
-from video_publisher import VideoPublisher
+from video_publisher import VideoPublisher, cue_from_filename
+from mixdown_publisher import publish_mixdown
 
 try:
     import rtmidi
@@ -434,14 +435,10 @@ def handle_xml(xml_path: Path):
         log(f"[xml error] PUSH FAILED: {e}")
 
 
-# ── Mixdown → Dropbox auto-upload ────────────────────────────────────────
-# Cubase mixdown exports are named "{cue_number} {title} {timecode}.wav" —
-# same string as the Dropbox cue folder under .../Scoring/, plus a trailing
-# timecode. Strip the timecode to get the folder name and drop the file in.
-
-WORKER_URL = "https://ds-note-worker.drumadima.workers.dev"
-TC_SUFFIX_RE = re.compile(r"\s+\d{2}[.:']\d{2}[.:']\d{2}[.:']\d{2}$")
-VERSION_SUFFIX_RE = re.compile(r"\s+V\d+(\.\d+)*\s*$", re.IGNORECASE)
+# ── Mixdown → Dropbox publish ─────────────────────────────────────────────
+# Cubase mixdown exports are named "{cue_number} {title} {version} {timecode}.wav".
+# The cue number picks the Dropbox cue folder under .../Scoring/ and the file is
+# written into the local Dropbox folder for the desktop app to sync.
 
 def resolve_project(path: Path):
     """Match a file path to a project's Supabase record by walking to the folder under the watch root."""
@@ -484,31 +481,8 @@ def resolve_project(path: Path):
                 return p
     return None
 
-def upload_to_dropbox(target_path: str, file_path: Path, file_bytes: bytes) -> dict:
-    """POST already-read file bytes straight to the worker's /dropbox-upload endpoint (multipart)."""
-    import uuid, urllib.request
-    boundary = uuid.uuid4().hex
-    body = b"".join([
-        f'--{boundary}\r\nContent-Disposition: form-data; name="path"\r\n\r\n{target_path}\r\n'.encode(),
-        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{file_path.name}"\r\n'
-        f'Content-Type: audio/wav\r\n\r\n'.encode(),
-        file_bytes,
-        f'\r\n--{boundary}--\r\n'.encode(),
-    ])
-    req = urllib.request.Request(
-        f"{WORKER_URL}/dropbox-upload",
-        data=body, method="POST",
-        headers={
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-        }
-    )
-    with urllib.request.urlopen(req, timeout=180) as r:
-        return json.loads(r.read())
-
 def handle_mixdown_wav(wav_path: Path, video_publisher=None):
-    """New WAV export detected under a Mixdown folder — push it to the matching cue's Dropbox folder."""
-    import urllib.error
+    """New WAV export detected under a Mixdown folder — publish it to the matching cue's Dropbox folder."""
     try:
         log(f"[mixdown] detected {wav_path.name}")
         finished = read_finished_wav(wav_path, log)
@@ -516,7 +490,7 @@ def handle_mixdown_wav(wav_path: Path, video_publisher=None):
             return
         wav_bytes, identity = finished
         if _mixdown_uploaded.get(wav_path) == identity:
-            log(f"[mixdown] {wav_path.name} unchanged since last upload — skipping")
+            log(f"[mixdown] {wav_path.name} unchanged since last publish — skipping")
             return
         if video_publisher and video_publisher.is_video_render_wav(wav_path):
             log(f"[mixdown] skipped video render companion WAV: {wav_path}")
@@ -527,21 +501,20 @@ def handle_mixdown_wav(wav_path: Path, video_publisher=None):
             return
         base_path = (proj.get('dropbox_base_path') or '').strip()
         if not base_path:
-            log(f"[mixdown] project '{proj.get('title')}' has no dropbox_base_path set — skipping upload")
+            log(f"[mixdown] project '{proj.get('title')}' has no dropbox_base_path set — skipping")
             return
-        folder_name = TC_SUFFIX_RE.sub("", wav_path.stem).strip()
-        folder_name = VERSION_SUFFIX_RE.sub("", folder_name).strip()
-        target_path = f"{base_path.rstrip('/')}/Scoring/{folder_name}/{wav_path.name}"
-        log(f"[mixdown] uploading to {target_path}")
         try:
-            result = upload_to_dropbox(target_path, wav_path, wav_bytes)
-            if result.get('ok'):
-                _mixdown_uploaded[wav_path] = identity
-                log(f"[mixdown] uploaded OK: {result.get('path')} ({result.get('size')} bytes)")
-            else:
-                log(f"[mixdown] upload failed: {result}")
-        except urllib.error.HTTPError as e:
-            log(f"[mixdown] upload FAILED: {e.code} {e.read().decode()[:300]}")
+            cue_from_filename(wav_path)
+        except ValueError:
+            log(f"[mixdown] {wav_path.name} doesn't start with a cue number and title — not published")
+            return
+        destination = publish_mixdown(wav_path, wav_bytes, proj, log)
+        if destination is None:
+            log(f"[mixdown] {wav_path.name} isn't named exactly like its cue's Dropbox folder — "
+                f"treated as a production version, not published")
+            return
+        _mixdown_uploaded[wav_path] = identity
+        log(f"[mixdown] published {len(wav_bytes)} bytes to Dropbox: {destination}")
     except Exception as e:
         log(f"[mixdown] error: {e}")
 
