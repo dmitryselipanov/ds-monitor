@@ -36,7 +36,9 @@ CPR = (b"header" + bus(10962, 14, "12l_SYNTH PADS LOW DRY") + bus(10970, 14, "07
        + track("SF Harp Main", 10980)
        + track("12l_SYNTH PADS LOW DRY", 10970)   # a group channel's own record: not a track
        + channel("Noise Beat", 10990) + bus(10990, 14, "12f_SYNTH PERC MID SUM")
-       + channel("Propheeet", 10970))             # the RecorderBus record already placed it: kept
+       + channel("Propheeet", 10970)              # the RecorderBus record already placed it: kept
+       + bus(11000, 14, "13_BAND ALL") + bus(11010, 14, "12g_SYNTH PERC HIGH DRY")
+       + channel("Ride", 11000) + channel("Ride", 11010))   # two tracks named Ride: the section group wins
 
 
 class CprRoutingTests(unittest.TestCase):
@@ -55,6 +57,7 @@ class CprRoutingTests(unittest.TestCase):
             "New Track Without Preset": "12l_SYNTH PADS LOW DRY",
             "SF Harp Main": "05a_HARP DRY",
             "Noise Beat": "12f_SYNTH PERC MID SUM",
+            "Ride": "12g_SYNTH PERC HIGH DRY",
         })
 
     def test_unreadable_file_gives_nothing(self):

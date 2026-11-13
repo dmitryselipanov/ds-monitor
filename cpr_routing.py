@@ -107,20 +107,33 @@ def channel_outputs(b: bytes) -> list[tuple[str, int | None]]:
     return rows
 
 
+def _group_rank(g: str) -> int:
+    """0 = a section's own group (12g_... DRY, 12a_SUB BOOMS), 1 = SUM/RVB/FX, 2 = family ALL/COMBINED."""
+    if re.search(r" (ALL|COMBINED)$", g) or re.match(r"^\d\d_", g):
+        return 2
+    if re.search(r" (SUM|RVB|HALL|SUPERHALL|ROOM|PLATE|DLY|SEND \d)$", g):
+        return 1
+    return 0
+
+
 def output_groups(path: Path) -> dict[str, str]:
     try:
         b = Path(path).read_bytes()
         groups = group_names(b)
-        result = {}
+        result, rank = {}, {}
         # instrument tracks' RecorderBus records first (proven on the template), then mixer
         # channel records, which also cover audio tracks
-        for name, out in track_outputs(b) + channel_outputs(b):
+        for order, (name, out) in enumerate(track_outputs(b) + channel_outputs(b)):
             g = groups.get(out)
-            # A name can have several records (stale copies in the file): keep the first
-            # that points at a real section group ("07b_STR HIGH LONGS DRY").
             # Group and FX channels have records too ("01a_WW MELODY SUM" → "01_WW ALL"): skip them
-            if name and g and name not in result and g[:2].isdigit() and not BUS_NAME.match(name):
-                result[name] = g
+            if not (name and g and g[:2].isdigit() and not BUS_NAME.match(name)):
+                continue
+            # A name can have several records: stale copies, or two tracks with the same name
+            # ("Ride" → 12g_SYNTH PERC HIGH DRY and "Ride" → 13_BAND ALL). A section's own group
+            # beats a family ALL/SUM bus; otherwise the first record wins.
+            r = (_group_rank(g), order)
+            if name not in rank or r < rank[name]:
+                result[name], rank[name] = g, r
         return result
     except Exception:
         return {}
