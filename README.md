@@ -75,6 +75,13 @@ original. The slim file keeps:
   (`<ds_tracks>` JSON). Audio tracks are left out; disabled tracks are never in
   Cubase's export.
 
+It also reads the project's `.cpr` (same name next to the XML, else the newest `.cpr`
+in that folder) with `cpr_routing.py` and adds each track's **output group**
+(`12l_SYNTH PADS LOW DRY`) so DS Scoring can name instruments by section, including
+tracks added by hand without a track preset. Read-only; the `.cpr` format is
+undocumented, so if it can't be read the slim file just has no groups.
+Check one project: `python3 cpr_routing.py "/path/project.cpr"`.
+
 The original is deleted only after all of these hold: the file is a complete Cubase
 export (every tag closed), no process has it open, it didn't change during
 conversion, and the slim file reads back with the same markers, tracks, parts and

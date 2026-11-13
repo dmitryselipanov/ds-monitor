@@ -405,8 +405,19 @@ def slim_xml_in_place(xml_path: Path) -> bool:
     """Replace a full Cubase export with its slim version (same name). False = not ready yet."""
     from xml_slim import replace_with_slim, SlimError
     from wav_check import file_is_open
+    groups = None
     try:
-        stats = replace_with_slim(xml_path, is_open=file_is_open)
+        from cpr_routing import find_project, output_groups
+        cpr = find_project(xml_path)
+        if cpr:
+            groups = output_groups(cpr)
+            log(f"[xml] {cpr.name}: output group for {len(groups)} tracks")
+        else:
+            log(f"[xml] no .cpr next to {xml_path.name}; instruments will be named from track names only")
+    except Exception as e:
+        log(f"[xml] reading the project's routing failed ({e}); track names only")
+    try:
+        stats = replace_with_slim(xml_path, is_open=file_is_open, groups=groups)
     except SlimError as e:
         msg = str(e)
         if msg.startswith("not a Cubase track export") or msg == "already slim":
@@ -423,7 +434,8 @@ def slim_xml_in_place(xml_path: Path) -> bool:
         log(f"[xml] slimmed {xml_path.name}: {stats['original_bytes'] / 1e6:.1f} MB → "
             f"{stats['slim_bytes'] / 1e3:.0f} KB, original deleted "
             f"({stats['range_markers']} cue markers, {stats['tracks']} MIDI tracks, "
-            f"{stats['notes']} notes, {stats['muted_parts']} muted parts)")
+            f"{stats['notes']} notes, {stats['muted_parts']} muted parts, "
+            f"{stats['grouped']} tracks with an output group)")
     return True
 
 

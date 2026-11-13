@@ -64,8 +64,9 @@ def _num(v):
     return int(f) if f == int(f) else round(f, 3)
 
 
-def slim(src: Path) -> tuple[str, dict]:
-    """Return (slim XML text, stats). Raises SlimError if src isn't a complete Cubase XML."""
+def slim(src: Path, groups: dict | None = None) -> tuple[str, dict]:
+    """Return (slim XML text, stats). Raises SlimError if src isn't a complete Cubase XML.
+    groups: {track name: output group} from the project's .cpr (cpr_routing), added as "g"."""
     stack = []                       # (class, ID) per open element
     blocks, blk = [], None           # verbatim copies of markers / tempo / signature
     tracks, cur, tstack = [], None, []
@@ -166,6 +167,9 @@ def slim(src: Path) -> tuple[str, dict]:
     psig = max(sdef, key=lambda i: (refs[i], sdef[i])) if sdef else None
 
     tracks = [t for t in tracks if t["parts"] or t["cls"] in ("Instrument", "Midi")]
+    for t in tracks:
+        if groups and groups.get(t["name"]):
+            t["g"] = groups[t["name"]]
     seen, keep = set(), []
     for b in blocks:
         x = re.sub(r">\s+<", "><", "".join(b["x"]))
@@ -195,6 +199,7 @@ def _stats_from(blocks_xml, tracks) -> dict:
         "parts": sum(len(t["parts"]) for t in tracks),
         "notes": sum(len(p["n"]) for t in tracks for p in t["parts"]),
         "muted_parts": sum(1 for t in tracks for p in t["parts"] if p["m"] & MUTED),
+        "grouped": sum(1 for t in tracks if t.get("g")),
     }
 
 
@@ -210,7 +215,7 @@ def stats_of_slim(path: Path) -> dict:
     return _stats_from(objs, tracks)
 
 
-def replace_with_slim(path: Path, *, is_open=None) -> dict | None:
+def replace_with_slim(path: Path, *, is_open=None, groups=None) -> dict | None:
     """Slim `path` in place. Returns stats, or None if it was already slim.
 
     The original is deleted (atomically replaced by the slim file under the same
@@ -227,7 +232,7 @@ def replace_with_slim(path: Path, *, is_open=None) -> dict | None:
     if is_open is not None and is_open(path):
         raise SlimError("still open by another process")
     before = path.stat()
-    text, stats = slim(path)
+    text, stats = slim(path, groups)
     tmp = path.with_name("." + path.name + ".ds-slim.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as f:

@@ -224,8 +224,8 @@ class SlimTests(unittest.TestCase):
         import xml_slim
         real = xml_slim.slim
 
-        def slim_then_cubase_writes_again(path):
-            result = real(path)
+        def slim_then_cubase_writes_again(path, groups=None):
+            result = real(path, groups)
             with open(path, "a") as f:
                 f.write("\n")
             st = path.stat()
