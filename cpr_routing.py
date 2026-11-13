@@ -117,10 +117,15 @@ def _group_rank(g: str) -> int:
 
 
 def output_groups(path: Path) -> dict[str, str]:
+    return output_routing(path)[0]
+
+
+def output_routing(path: Path) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """({track name: chosen group}, {track name: every group its records point at, in order})."""
     try:
         b = Path(path).read_bytes()
         groups = group_names(b)
-        result, rank = {}, {}
+        result, rank, every = {}, {}, {}
         # instrument tracks' RecorderBus records first (proven on the template), then mixer
         # channel records, which also cover audio tracks
         for order, (name, out) in enumerate(track_outputs(b) + channel_outputs(b)):
@@ -132,11 +137,55 @@ def output_groups(path: Path) -> dict[str, str]:
             # ("Ride" → 12g_SYNTH PERC HIGH DRY and "Ride" → 13_BAND ALL). A section's own group
             # beats a family ALL/SUM bus; otherwise the first record wins.
             r = (_group_rank(g), order)
+            if g not in every.setdefault(name, []):
+                every[name].append(g)
             if name not in rank or r < rank[name]:
                 result[name], rank[name] = g, r
-        return result
+        return result, every
     except Exception:
-        return {}
+        return {}, {}
+
+
+UTILITY_TRACK = re.compile(r"^(dx|sfx|fx|temp|temp music|dialog(ue)?|video|cue|video marker|music marker|signature|tempo)( \d+)?$", re.I)
+
+
+def routing_issues(tracks: list[dict], chosen: dict[str, str], every: dict[str, list[str]]) -> list[dict]:
+    """Routing slips among the tracks that play in an export (slim ds_tracks):
+    - same:    two or more tracks with this name output to different groups
+    - bus:     output into a SUM, RVB or reverb FX channel instead of a section group
+    - none:    a music track that plays but outputs to no group (Stereo Out, nothing)
+    Only checked when the project's routing could be read at all."""
+    if not chosen:
+        return []
+    def plays(t):
+        return any(not p["m"] & 2 and (p.get("a") or any(not (n[3] or 0) & 2 for n in p["n"])) for p in t["parts"])
+    playing = [t for t in tracks if plays(t)]
+    count = {}
+    for t in tracks:
+        count[t["name"]] = count.get(t["name"], 0) + 1
+    issues, seen = [], set()
+    for t in playing:
+        name = t["name"]
+        if name in seen or UTILITY_TRACK.match(name.strip()):
+            continue
+        seen.add(name)
+        g = chosen.get(name)
+        if count[name] > 1 and len(every.get(name, [])) > 1:
+            issues.append({"track": name, "kind": "same", "groups": every[name]})
+        elif g and _group_rank(g) == 1:
+            issues.append({"track": name, "kind": "bus", "groups": [g]})
+        elif not g:
+            issues.append({"track": name, "kind": "none", "groups": []})
+    return issues
+
+
+def describe(issue: dict) -> str:
+    g = issue["groups"]
+    if issue["kind"] == "same":
+        return f'{issue["track"]}: {len(g)} tracks with this name go to different groups ({", ".join(g)}). Rename one or fix its output.'
+    if issue["kind"] == "bus":
+        return f'{issue["track"]}: outputs into {g[0]}, not a section group. Usually it should go to that section\'s DRY group.'
+    return f'{issue["track"]}: plays but outputs to no group (Stereo Out or nothing).'
 
 
 def find_project(xml_path: Path) -> Path | None:

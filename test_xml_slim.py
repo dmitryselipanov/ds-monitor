@@ -207,6 +207,7 @@ class SlimTests(unittest.TestCase):
 
     def test_stats_read_back_match(self):
         text, stats = slim(self.path)
+        stats.pop("issues")
         out = self.path.with_name("check.xml")
         out.write_text(text, encoding="utf-8")
         self.assertEqual(stats_of_slim(out), stats)
@@ -261,8 +262,8 @@ class SlimTests(unittest.TestCase):
         import xml_slim
         real = xml_slim.slim
 
-        def slim_then_cubase_writes_again(path, groups=None):
-            result = real(path, groups)
+        def slim_then_cubase_writes_again(path, groups=None, every=None):
+            result = real(path, groups, every)
             with open(path, "a") as f:
                 f.write("\n")
             st = path.stat()

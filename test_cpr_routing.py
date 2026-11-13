@@ -78,8 +78,37 @@ class CprRoutingTests(unittest.TestCase):
         xml.write_text(FULL, encoding="utf-8")
         stats = replace_with_slim(xml, groups={"Kick&Snare": "03d_SNARES DRY"})
         self.assertEqual(stats["grouped"], 1)
-        tracks = json.loads(re.search(r"CDATA\[(.*)\]\]>", xml.read_text(), re.S).group(1))
+        tracks = json.loads(re.search(r"<ds_tracks><!\[CDATA\[(.*?)\]\]></ds_tracks>", xml.read_text(), re.S).group(1))
         self.assertEqual({t["name"]: t.get("g") for t in tracks}, {"Kick&Snare": "03d_SNARES DRY", "Vln I": None})
+
+
+class RoutingIssuesTests(unittest.TestCase):
+    def tracks(self, *names, muted=()):
+        return [{"name": n, "parts": [{"s": 0, "l": 960, "o": 0, "m": 2 if n in muted else 0, "n": [[0, 480, 60, 0]]}]} for n in names]
+
+    def test_flags_the_three_kinds_and_skips_the_rest(self):
+        tracks = self.tracks("Ride", "Ride", "Detuned Mid Pad", "Unrouted Synth", "Propheeet", "Dx", "Muted Thing", muted=("Muted Thing",))
+        chosen = {"Ride": "12g_SYNTH PERC HIGH DRY", "Detuned Mid Pad": "03a_BASS DRUMS SUM", "Propheeet": "12l_SYNTH PADS LOW DRY"}
+        every = {"Ride": ["13_BAND ALL", "12g_SYNTH PERC HIGH DRY"], "Detuned Mid Pad": ["03a_BASS DRUMS SUM"], "Propheeet": ["12l_SYNTH PADS LOW DRY", "Stale Group"]}
+        issues = cr.routing_issues(tracks, chosen, every)
+        self.assertEqual([(i["track"], i["kind"]) for i in issues],
+                         [("Ride", "same"), ("Detuned Mid Pad", "bus"), ("Unrouted Synth", "none")])
+        # Propheeet has a stale second record but only one track: not flagged. Dx and muted tracks: skipped.
+        self.assertIn("Rename one or fix its output", cr.describe(issues[0]))
+
+    def test_nothing_when_the_project_could_not_be_read(self):
+        self.assertEqual(cr.routing_issues(self.tracks("Anything"), {}, {}), [])
+
+    def test_slim_file_carries_the_issues(self):
+        import json, re
+        with tempfile.TemporaryDirectory() as d:
+            xml = Path(d) / "cue.xml"
+            xml.write_text(FULL.replace('<int name="Flags" value="2"/>\n                        </obj>', '</obj>'), encoding="utf-8")
+            stats = replace_with_slim(xml, groups={"Vln I": "07b_STR HIGH LONGS DRY"}, every={"Vln I": ["07b_STR HIGH LONGS DRY"]})
+            self.assertEqual(stats["routing_issues"], 1)                 # Kick&Snare plays with no group
+            self.assertEqual(stats["issues"][0]["track"], "Kick&Snare")
+            body = json.loads(re.search(r"<ds_routing><!\[CDATA\[(.*?)\]\]></ds_routing>", xml.read_text(), re.S).group(1))
+            self.assertEqual(body[0]["kind"], "none")
 
 
 class PlayingTracksTests(unittest.TestCase):

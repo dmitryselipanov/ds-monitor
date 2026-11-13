@@ -66,7 +66,7 @@ def _num(v):
     return int(f) if f == int(f) else round(f, 3)
 
 
-def slim(src: Path, groups: dict | None = None) -> tuple[str, dict]:
+def slim(src: Path, groups: dict | None = None, every: dict | None = None) -> tuple[str, dict]:
     """Return (slim XML text, stats). Raises SlimError if src isn't a complete Cubase XML.
     groups: {track name: output group} from the project's .cpr (cpr_routing), added as "g"."""
     stack = []                       # (class, ID) per open element
@@ -199,14 +199,21 @@ def slim(src: Path, groups: dict | None = None) -> tuple[str, dict]:
             keep.append(x)
 
     payload = json.dumps(tracks, separators=(",", ":"), ensure_ascii=False)
+    from cpr_routing import routing_issues
+    issues = routing_issues(tracks, groups or {}, every or {})
+    cdata = lambda x: x.replace("]]>", "]]]]><![CDATA[>")
     text = ('<?xml version="1.0" encoding="utf-8"?>\n<%s %s>\n' % (root, SLIM_MARK)
-            + "\n".join(keep) + "\n<ds_tracks><![CDATA[" + payload.replace("]]>", "]]]]><![CDATA[>")
-            + "]]></ds_tracks>\n</%s>\n" % root)
-    return text, _stats_from(keep, tracks)
+            + "\n".join(keep) + "\n<ds_tracks><![CDATA[" + cdata(payload) + "]]></ds_tracks>\n"
+            + "<ds_routing><![CDATA[" + cdata(json.dumps(issues, ensure_ascii=False)) + "]]></ds_routing>\n"
+            + "</%s>\n" % root)
+    stats = _stats_from(keep, tracks, issues)
+    stats["issues"] = issues
+    return text, stats
 
 
-def _stats_from(blocks_xml, tracks) -> dict:
+def _stats_from(blocks_xml, tracks, issues=()) -> dict:
     return {
+        "routing_issues": len(issues),
         "range_markers": sum(1 for x in blocks_xml if 'class="MRangeMarkerEvent"' in x),
         "tempo_events": sum(1 for x in blocks_xml if 'class="MTempoEvent"' in x),
         "tracks": len(tracks),
@@ -227,10 +234,12 @@ def stats_of_slim(path: Path) -> dict:
     objs = [ET.tostring(o, encoding="unicode") for o in root.findall("obj")]
     node = root.find("ds_tracks")
     tracks = json.loads(node.text) if node is not None and node.text else []
-    return _stats_from(objs, tracks)
+    rnode = root.find("ds_routing")
+    issues = json.loads(rnode.text) if rnode is not None and rnode.text else []
+    return _stats_from(objs, tracks, issues)
 
 
-def replace_with_slim(path: Path, *, is_open=None, groups=None) -> dict | None:
+def replace_with_slim(path: Path, *, is_open=None, groups=None, every=None) -> dict | None:
     """Slim `path` in place. Returns stats, or None if it was already slim.
 
     The original is deleted (atomically replaced by the slim file under the same
@@ -247,7 +256,8 @@ def replace_with_slim(path: Path, *, is_open=None, groups=None) -> dict | None:
     if is_open is not None and is_open(path):
         raise SlimError("still open by another process")
     before = path.stat()
-    text, stats = slim(path, groups)
+    text, stats = slim(path, groups, every)
+    issues = stats.pop("issues", [])
     tmp = path.with_name("." + path.name + ".ds-slim.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as f:
@@ -269,6 +279,7 @@ def replace_with_slim(path: Path, *, is_open=None, groups=None) -> dict | None:
             tmp.unlink()
         except FileNotFoundError:
             pass
+    stats["issues"] = issues
     stats["original_bytes"] = before.st_size
     stats["slim_bytes"] = path.stat().st_size
     return stats

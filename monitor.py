@@ -405,19 +405,19 @@ def slim_xml_in_place(xml_path: Path) -> bool:
     """Replace a full Cubase export with its slim version (same name). False = not ready yet."""
     from xml_slim import replace_with_slim, SlimError
     from wav_check import file_is_open
-    groups = None
+    groups = every = None
     try:
-        from cpr_routing import find_project, output_groups
+        from cpr_routing import find_project, output_routing
         cpr = find_project(xml_path)
         if cpr:
-            groups = output_groups(cpr)
+            groups, every = output_routing(cpr)
             log(f"[xml] {cpr.name}: output group for {len(groups)} tracks")
         else:
             log(f"[xml] no .cpr next to {xml_path.name}; instruments will be named from track names only")
     except Exception as e:
         log(f"[xml] reading the project's routing failed ({e}); track names only")
     try:
-        stats = replace_with_slim(xml_path, is_open=file_is_open, groups=groups)
+        stats = replace_with_slim(xml_path, is_open=file_is_open, groups=groups, every=every)
     except SlimError as e:
         msg = str(e)
         if msg.startswith("not a Cubase track export") or msg == "already slim":
@@ -436,7 +436,27 @@ def slim_xml_in_place(xml_path: Path) -> bool:
             f"({stats['range_markers']} cue markers, {stats['tracks']} MIDI tracks, "
             f"{stats['notes']} notes, {stats['muted_parts']} muted parts, "
             f"{stats['grouped']} tracks with an output group)")
+        report_routing_issues(xml_path, stats.get("issues") or [])
     return True
+
+
+def report_routing_issues(xml_path: Path, issues: list):
+    """Log routing slips in the exported cue and show a Mac notification, so they can be fixed
+    while the project is still open. DS Scoring's import dialog lists them too."""
+    if not issues:
+        return
+    from cpr_routing import describe
+    for i in issues:
+        log(f"[routing] {xml_path.stem}: {describe(i)}")
+    names = ", ".join(i["track"] for i in issues[:4]) + (" …" if len(issues) > 4 else "")
+    title = f"{xml_path.stem}: {len(issues)} routing issue{'s' if len(issues) != 1 else ''}"
+    try:
+        import subprocess
+        script = 'display notification %s with title "DS Monitor" subtitle %s' % (
+            json.dumps(names, ensure_ascii=False), json.dumps(title, ensure_ascii=False))
+        subprocess.run(["/usr/bin/osascript", "-e", script], timeout=10, capture_output=True)
+    except Exception as e:
+        log(f"[routing] notification failed: {e}")
 
 
 _xml_active = set()
