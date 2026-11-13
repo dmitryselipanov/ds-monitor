@@ -10,6 +10,8 @@ mixer settings, controller data and audio hit points. DS Scoring needs only:
   tempo maps of their own; those are renamed xMTempoEvent so the importer skips them
 - every MIDI/instrument track: name, parts (position, length, offset, mute flag)
   and notes (start, length, pitch, mute flag), as one JSON block in <ds_tracks>
+- every audio track's regions (position, length, mute flag; "a": 1, no notes), so DS
+  Scoring can show which sounds a cue uses even when they're audio
 
 Disabled tracks are not in Cubase's export at all; muted parts/notes carry Flags bit 2.
 
@@ -71,6 +73,7 @@ def slim(src: Path, groups: dict | None = None) -> tuple[str, dict]:
     blocks, blk = [], None           # verbatim copies of markers / tempo / signature
     tracks, cur, tstack = [], None, []
     part = note = None
+    in_apart = False                 # inside an audio part: its events are covered by the part
     refs = Counter()                 # how often each Tempo/Signature track is referenced
     root = None
     closed_root = False
@@ -99,8 +102,10 @@ def slim(src: Path, groups: dict | None = None) -> tuple[str, dict]:
                 if cls == "MMidiNote" and note is not None and part is not None:
                     part["n"].append(note)
                     note = None
-                elif cls == "MMidiPartEvent":
+                elif cls in ("MMidiPartEvent", "MAudioPartEvent") or (cls == "MAudioEvent" and not in_apart):
                     part = None
+                if cls == "MAudioPartEvent":
+                    in_apart = False
                 if tstack and len(stack) < tstack[-1][0]:
                     tstack.pop()
                     cur = tstack[-1][1] if tstack else None
@@ -134,6 +139,13 @@ def slim(src: Path, groups: dict | None = None) -> tuple[str, dict]:
                 cur["parts"].append(part)
             elif cls == "MMidiNote" and part is not None:
                 note = [None, None, None, 0]
+            elif cls == "MAudioPartEvent" and cur is not None:
+                part = {"s": None, "l": None, "o": 0, "m": 0, "a": 1, "n": []}
+                cur["parts"].append(part)
+                in_apart = True
+            elif cls == "MAudioEvent" and cur is not None and not in_apart:
+                part = {"s": None, "l": None, "o": 0, "m": 0, "a": 1, "n": []}
+                cur["parts"].append(part)
             if name in ("float", "int", "string") and "name" in a:
                 k, v = a["name"], a.get("value", "")
                 top = stack[-1][0] if stack else ""
@@ -142,7 +154,7 @@ def slim(src: Path, groups: dict | None = None) -> tuple[str, dict]:
                     elif k == "Length": note[1] = _num(v)
                     elif k == "Data1": note[2] = int(v)
                     elif k == "Flags": note[3] = int(v)
-                elif part is not None and top == "MMidiPartEvent":
+                elif part is not None and (top == "MMidiPartEvent" or (part.get("a") and (top == "MAudioPartEvent" or (top == "MAudioEvent" and not in_apart)))):
                     if k == "Start": part["s"] = _num(v)
                     elif k == "Length": part["l"] = _num(v)
                     elif k == "Offset": part["o"] = _num(v)
@@ -166,6 +178,8 @@ def slim(src: Path, groups: dict | None = None) -> tuple[str, dict]:
     ptempo = max(tdef, key=lambda i: (refs[i], tdef[i])) if tdef else None
     psig = max(sdef, key=lambda i: (refs[i], sdef[i])) if sdef else None
 
+    for t in tracks:                 # an audio part's own events would otherwise count twice
+        t["parts"] = [p for p in t["parts"] if not (p.get("a") and p["s"] is None)]
     tracks = [t for t in tracks if t["parts"] or t["cls"] in ("Instrument", "Midi")]
     for t in tracks:
         if groups and groups.get(t["name"]):
@@ -198,6 +212,7 @@ def _stats_from(blocks_xml, tracks) -> dict:
         "tracks": len(tracks),
         "parts": sum(len(t["parts"]) for t in tracks),
         "notes": sum(len(p["n"]) for t in tracks for p in t["parts"]),
+        "audio_regions": sum(1 for t in tracks for p in t["parts"] if p.get("a")),
         "muted_parts": sum(1 for t in tracks for p in t["parts"] if p["m"] & MUTED),
         "grouped": sum(1 for t in tracks if t.get("g")),
     }

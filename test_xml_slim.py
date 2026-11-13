@@ -140,11 +140,48 @@ class SlimTests(unittest.TestCase):
         self.assertEqual(stats["notes"], 2)
         self.assertEqual(stats["muted_parts"], 1)
 
-    def test_audio_tracks_are_not_counted(self):
+    def test_audio_tracks_without_regions_are_left_out(self):
         root, stats = self.slim_doc()
         names = [t["name"] for t in json.loads(root.find("ds_tracks").text)]
         self.assertNotIn("Maya demo", names)
         self.assertEqual(stats["tracks"], 2)
+
+    def test_audio_regions_are_kept_with_mute_flags(self):
+        audio = """
+      <obj class="MAudioTrackEvent" ID="20">
+         <obj class="MListNode" name="Node" ID="21">
+            <string name="Name" value="Kick&amp;Snare Loop"/>
+            <list name="Events" type="obj">
+               <obj class="MAudioEvent" ID="22">
+                  <float name="Start" value="1920"/>
+                  <float name="Length" value="960"/>
+                  <obj class="MFadeIn" name="Fade In" ID="23"><float name="Start" value="0"/><float name="Length" value="10"/><int name="Flags" value="2"/></obj>
+               </obj>
+               <obj class="MAudioEvent" ID="24">
+                  <int name="Flags" value="2"/>
+                  <float name="Start" value="4800"/>
+                  <float name="Length" value="480"/>
+               </obj>
+               <obj class="MAudioPartEvent" ID="25">
+                  <float name="Start" value="9600"/>
+                  <float name="Length" value="1920"/>
+                  <obj class="MAudioPart" name="Node" ID="26">
+                     <list name="Events" type="obj">
+                        <obj class="MAudioEvent" ID="27"><float name="Start" value="0"/><float name="Length" value="480"/></obj>
+                        <obj class="MAudioEvent" ID="28"><float name="Start" value="960"/><float name="Length" value="480"/></obj>
+                     </list>
+                  </obj>
+               </obj>
+            </list>
+         </obj>
+      </obj>"""
+        self.path.write_text(FULL.replace('      <obj class="MMarkerTrackEvent"', audio + '\n      <obj class="MMarkerTrackEvent"'), encoding="utf-8")
+        root, stats = self.slim_doc()
+        loop = next(t for t in json.loads(root.find("ds_tracks").text) if t["name"] == "Kick&Snare Loop")
+        self.assertEqual(loop["cls"], "Audio")
+        self.assertEqual([(p["s"], p["l"], p["m"], p.get("a")) for p in loop["parts"]],
+                         [(1920, 960, 0, 1), (4800, 480, 2, 1), (9600, 1920, 0, 1)])
+        self.assertEqual(stats["audio_regions"], 3)
 
     def test_project_tempo_map_is_kept_and_audio_tempo_set_aside(self):
         root, _ = self.slim_doc()
