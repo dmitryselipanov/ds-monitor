@@ -82,6 +82,18 @@ tracks added by hand without a track preset. Read-only; the `.cpr` format is
 undocumented, so if it can't be read the slim file just has no groups.
 Check one project: `python3 cpr_routing.py "/path/project.cpr"`.
 
+**Routing check.** Every export is checked for routing slips among the tracks that play:
+two tracks with the same name going to different groups, outputs into a SUM/RVB/reverb
+channel instead of a section group, and music tracks with no group. They show as a Mac
+notification, in the log, and in DS Scoring's import dialog.
+
+To check *before* exporting, save in Cubase (Cmd+S) and choose **Check Routing** in the
+DS Monitor menu. It compares the saved project with the template (default
+`~/Library/Preferences/Cubase 15/Project Templates/Orchestral_v16 Colors.cpr`, or
+`"routing_template"` in `~/.ds-monitor-config.json`) and reports slips only in tracks added
+or re-routed since the template. The template's routing is cached in
+`~/Library/Caches/ds-monitor/template-routing.json` until the template file changes.
+
 The original is deleted only after all of these hold: the file is a complete Cubase
 export (every tag closed), no process has it open, it didn't change during
 conversion, and the slim file reads back with the same markers, tracks, parts and

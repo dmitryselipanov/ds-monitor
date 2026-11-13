@@ -440,6 +440,86 @@ def slim_xml_in_place(xml_path: Path) -> bool:
     return True
 
 
+# ── Check Routing (menu bar item) ─────────────────────────────────────────
+_last_saved_cpr = None
+
+
+def remember_saved_project(path: Path):
+    global _last_saved_cpr
+    _last_saved_cpr = path
+
+
+def routing_template() -> Path:
+    """The template the project is compared with: "routing_template" in ~/.ds-monitor-config.json,
+    else Orchestral_v16 Colors.cpr in Cubase 15's Project Templates."""
+    from cpr_routing import TEMPLATE_DEFAULT
+    try:
+        if DS_CONFIG_PATH.exists():
+            p = json.loads(DS_CONFIG_PATH.read_text()).get("routing_template")
+            if p:
+                return Path(p).expanduser()
+    except Exception as e:
+        log(f"[routing] config: {e}")
+    return TEMPLATE_DEFAULT
+
+
+def newest_project() -> Path | None:
+    """The .cpr saved most recently: the one DS Monitor saw being saved, else the newest in the
+    watched folders (Cubase's numbered backups skipped)."""
+    if _last_saved_cpr and _last_saved_cpr.exists():
+        return _last_saved_cpr
+    best = None
+    for root in ALL_WATCH_DIRS:
+        for p in Path(root).rglob("*.cpr"):
+            if re.search(r"-\d{2}$", p.stem):
+                continue
+            try:
+                if best is None or p.stat().st_mtime > best.stat().st_mtime:
+                    best = p
+            except OSError:
+                pass
+    return best
+
+
+def notify(title: str, subtitle: str, body: str):
+    try:
+        import subprocess
+        script = 'display notification %s with title %s subtitle %s' % (
+            json.dumps(body, ensure_ascii=False), json.dumps(title, ensure_ascii=False), json.dumps(subtitle, ensure_ascii=False))
+        subprocess.run(["/usr/bin/osascript", "-e", script], timeout=10, capture_output=True)
+    except Exception as e:
+        log(f"[notify] failed: {e}")
+
+
+def check_routing_now():
+    """Menu item: compare the last saved project's routing with the template and report slips in
+    tracks added or re-routed since. Save in Cubase (Cmd+S) first: it reads the file on disk."""
+    from cpr_routing import check_project, describe
+    project = newest_project()
+    if not project:
+        notify("DS Monitor", "Check Routing", "No saved Cubase project found in the watched folders.")
+        return
+    template = routing_template()
+    if not template.exists():
+        log(f"[routing] template not found: {template}")
+        notify("DS Monitor", "Check Routing", 'Template not found. Set "routing_template" in ~/.ds-monitor-config.json.')
+        return
+    log(f"[routing] checking {project.name} against {template.name}")
+    try:
+        issues = check_project(project, template)
+    except Exception as e:
+        log(f"[routing] check failed: {e}")
+        notify("DS Monitor", f"Check Routing: {project.stem}", "Couldn't read the project's routing.")
+        return
+    for i in issues:
+        log(f"[routing] {project.stem}: {describe(i)}")
+    if issues:
+        names = ", ".join(i["track"] for i in issues[:4]) + (" …" if len(issues) > 4 else "")
+        notify("DS Monitor", f"{project.stem}: {len(issues)} routing issue{'s' if len(issues) != 1 else ''}", names)
+    else:
+        notify("DS Monitor", f"{project.stem}: routing OK", "No issues in tracks added or changed since the template.")
+
+
 def report_routing_issues(xml_path: Path, issues: list):
     """Log routing slips in the exported cue and show a Mac notification, so they can be fixed
     while the project is still open. DS Scoring's import dialog lists them too."""
@@ -449,14 +529,7 @@ def report_routing_issues(xml_path: Path, issues: list):
     for i in issues:
         log(f"[routing] {xml_path.stem}: {describe(i)}")
     names = ", ".join(i["track"] for i in issues[:4]) + (" …" if len(issues) > 4 else "")
-    title = f"{xml_path.stem}: {len(issues)} routing issue{'s' if len(issues) != 1 else ''}"
-    try:
-        import subprocess
-        script = 'display notification %s with title "DS Monitor" subtitle %s' % (
-            json.dumps(names, ensure_ascii=False), json.dumps(title, ensure_ascii=False))
-        subprocess.run(["/usr/bin/osascript", "-e", script], timeout=10, capture_output=True)
-    except Exception as e:
-        log(f"[routing] notification failed: {e}")
+    notify("DS Monitor", f"{xml_path.stem}: {len(issues)} routing issue{'s' if len(issues) != 1 else ''}", names)
 
 
 _xml_active = set()
@@ -1298,6 +1371,7 @@ def watch_loop():
                     schedule_xml(path)
             elif ext == ".cpr":
                 if not re.search(r"-\d{2}$", path.stem):
+                    remember_saved_project(path)
                     if path not in seen or seen[path] != mtime:
                         if path in seen:
                             threading.Thread(target=run_analysis, args=(path,), daemon=True).start()
@@ -1378,8 +1452,12 @@ class DSMonitorApp(rumps.App):
     def __init__(self):
         super().__init__("♩", quit_button=None)
         self.ai_item = rumps.MenuItem("○ AI Analysis: OFF", callback=self.toggle_ai)
-        self.menu = ["Idle — waiting for save", None, self.ai_item, None, rumps.MenuItem("Quit DS//Monitor", callback=rumps.quit_application)]
+        self.routing_item = rumps.MenuItem("Check Routing (save first)", callback=self.check_routing)
+        self.menu = ["Idle — waiting for save", None, self.routing_item, self.ai_item, None, rumps.MenuItem("Quit DS//Monitor", callback=rumps.quit_application)]
         self._last_status = "idle"
+
+    def check_routing(self, _):
+        threading.Thread(target=check_routing_now, daemon=True).start()
 
     def toggle_ai(self, _):
         global AI_ENABLED
@@ -1423,6 +1501,7 @@ class DSMonitorApp(rumps.App):
             items.append(rumps.MenuItem(f"Parsing {cue}…", callback=None))
 
         items.append(None)
+        items.append(self.routing_item)
         items.append(self.ai_item)
         items.append(None)
         items.append(rumps.MenuItem("Quit DS//Monitor", callback=rumps.quit_application))

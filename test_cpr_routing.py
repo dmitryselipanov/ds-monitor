@@ -111,6 +111,51 @@ class RoutingIssuesTests(unittest.TestCase):
             self.assertEqual(body[0]["kind"], "none")
 
 
+class CheckRoutingTests(unittest.TestCase):
+    TEMPLATE = {
+        "Propheeet": ["12l_SYNTH PADS LOW DRY"],
+        "Sketch Piano I": [None],                       # Stereo Out by design: never reported
+        "Detuned Mid Pad": ["03a_BASS DRUMS SUM"],      # a slip already in the template: not reported again
+        "SF Harp Main": ["05a_HARP DRY"],
+    }
+
+    def test_only_tracks_added_or_rerouted_since_the_template(self):
+        project = dict(self.TEMPLATE)
+        project.update({
+            "Ride": ["13_BAND ALL", "12g_SYNTH PERC HIGH DRY"],   # new, two tracks, two groups
+            "Noise Beat": ["12f_SYNTH PERC MID SUM"],              # new, into a SUM
+            "New Synth": [None],                                    # new, no group
+            "SF Harp Main": ["05a_HARP RVB"],                       # re-routed into a reverb sum
+            "Gtr": ["13_BAND ALL"],                                 # new and fine
+            "Dx": [None],                                           # utility
+        })
+        issues = cr.project_issues(project, self.TEMPLATE)
+        self.assertEqual([(i["track"], i["kind"]) for i in issues],
+                         [("New Synth", "none"), ("Noise Beat", "bus"), ("Ride", "same"), ("SF Harp Main", "bus")])
+
+    def test_records_keep_unrouted_tracks_and_skip_channels(self):
+        rec = cr.routing_records(CPR)
+        self.assertEqual(rec["Sketch Piano I"], [None])
+        self.assertEqual(rec["Ride"], ["13_BAND ALL", "12g_SYNTH PERC HIGH DRY"])
+        self.assertNotIn("12l_SYNTH PADS LOW DRY", rec)
+
+    def test_check_project_with_cached_template(self):
+        with tempfile.TemporaryDirectory() as d:
+            proj, tmpl = Path(d) / "2m29.cpr", Path(d) / "Orchestral.cpr"
+            proj.write_bytes(CPR)
+            # the template: the same file before Noise Beat and the two Ride tracks were added
+            tmpl.write_bytes(CPR.replace(channel("Noise Beat", 10990), b"").replace(channel("Ride", 11000), b"").replace(channel("Ride", 11010), b""))
+            old = cr.TEMPLATE_CACHE
+            cr.TEMPLATE_CACHE = Path(d) / "cache.json"
+            try:
+                first = cr.check_project(proj, tmpl)
+                self.assertTrue(cr.TEMPLATE_CACHE.exists())
+                self.assertEqual(cr.check_project(proj, tmpl), first)     # second run reads the cache
+            finally:
+                cr.TEMPLATE_CACHE = old
+            self.assertEqual({i["track"]: i["kind"] for i in first}, {"Ride": "same", "Noise Beat": "bus"})
+
+
 class PlayingTracksTests(unittest.TestCase):
     def test_only_tracks_with_unmuted_notes(self):
         with tempfile.TemporaryDirectory() as d:

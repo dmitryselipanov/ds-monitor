@@ -179,10 +179,79 @@ def routing_issues(tracks: list[dict], chosen: dict[str, str], every: dict[str, 
     return issues
 
 
+# ── Check Routing (menu item): a saved project compared with the template ─────────────────
+TEMPLATE_DEFAULT = Path.home() / "Library" / "Preferences" / "Cubase 15" / "Project Templates" / "Orchestral_v16 Colors.cpr"
+TEMPLATE_CACHE = Path.home() / "Library" / "Caches" / "ds-monitor" / "template-routing.json"
+NOT_A_TRACK = re.compile(r"^((stereo|mono) (out|in)\b|input|output)", re.I)
+
+
+def routing_records(b: bytes) -> dict[str, list]:
+    """{track name: every output it has, in order}: a group name, or None when the output isn't
+    a group or FX channel (Stereo Out, nothing). Group/FX channels' own records are skipped."""
+    groups = group_names(b)
+    out: dict[str, list] = {}
+    for name, o in track_outputs(b) + channel_outputs(b):
+        if not name or BUS_NAME.match(name) or NOT_A_TRACK.match(name):
+            continue
+        g = groups.get(o)
+        g = g if g and g[:2].isdigit() else None
+        lst = out.setdefault(name, [])
+        if g not in lst:
+            lst.append(g)
+    return out
+
+
+def template_records(template: Path) -> dict[str, list]:
+    """The template's routing, cached until the template file changes (it's ~200 MB)."""
+    st = template.stat()
+    key = [str(template), st.st_size, st.st_mtime_ns]
+    try:
+        import json
+        cached = json.loads(TEMPLATE_CACHE.read_text())
+        if cached.get("key") == key:
+            return cached["records"]
+    except Exception:
+        pass
+    records = routing_records(template.read_bytes())
+    try:
+        import json
+        TEMPLATE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        TEMPLATE_CACHE.write_text(json.dumps({"key": key, "records": records}))
+    except OSError:
+        pass
+    return records
+
+
+def project_issues(project: dict[str, list], template: dict[str, list]) -> list[dict]:
+    """Routing slips in tracks added or re-routed since the template (the template itself was
+    audited, so its own routing isn't reported again)."""
+    issues = []
+    for name, outs in sorted(project.items(), key=lambda kv: kv[0].lower()):
+        if UTILITY_TRACK.match(name.strip()):
+            continue
+        p = [g for g in outs if g]
+        known = name in template
+        t = set(g for g in template.get(name, []) if g)
+        changed = [g for g in p if g not in t]
+        if known and not changed:
+            continue
+        if len(p) > 1 and changed:
+            issues.append({"track": name, "kind": "same", "groups": p})
+        elif any(_group_rank(g) == 1 for g in (changed if known else p)):
+            issues.append({"track": name, "kind": "bus", "groups": [g for g in p if _group_rank(g) == 1][:1]})
+        elif not p and not known:
+            issues.append({"track": name, "kind": "none", "groups": []})
+    return issues
+
+
+def check_project(project_cpr: Path, template_cpr: Path) -> list[dict]:
+    return project_issues(routing_records(Path(project_cpr).read_bytes()), template_records(Path(template_cpr)))
+
+
 def describe(issue: dict) -> str:
     g = issue["groups"]
     if issue["kind"] == "same":
-        return f'{issue["track"]}: {len(g)} tracks with this name go to different groups ({", ".join(g)}). Rename one or fix its output.'
+        return f'{issue["track"]}: tracks with this name go to different groups ({", ".join(g)}). Rename one or fix its output.'
     if issue["kind"] == "bus":
         return f'{issue["track"]}: outputs into {g[0]}, not a section group. Usually it should go to that section\'s DRY group.'
     return f'{issue["track"]}: plays but outputs to no group (Stereo Out or nothing).'
