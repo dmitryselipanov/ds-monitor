@@ -110,7 +110,8 @@ def find_project(xml_path: Path) -> Path | None:
 
 
 def playing_tracks(xml_path: Path) -> list[str]:
-    """MIDI tracks with at least one unmuted note in a Cubase XML export (full or slim)."""
+    """Tracks that play in a Cubase XML export (full or slim): an unmuted note, or an unmuted audio
+    region. Audio tracks get " (audio)" after their name."""
     import json
     text = Path(xml_path).read_text(encoding="utf-8", errors="replace")
     m = re.search(r"<ds_tracks><!\[CDATA\[(.*?)\]\]></ds_tracks>", text, re.S)
@@ -120,8 +121,12 @@ def playing_tracks(xml_path: Path) -> list[str]:
         from xml_slim import slim
         text, _ = slim(Path(xml_path))
         tracks = json.loads(re.search(r"<ds_tracks><!\[CDATA\[(.*?)\]\]></ds_tracks>", text, re.S).group(1))
-    return [t["name"] for t in tracks
-            if any(not p["m"] & 2 and any(not (n[3] or 0) & 2 for n in p["n"]) for p in t["parts"])]
+    def plays(p):
+        if p["m"] & 2:
+            return False
+        return bool(p.get("a")) or any(not (n[3] or 0) & 2 for n in p["n"])   # audio region, or an unmuted note
+    return [t["name"] + (" (audio)" if any(p.get("a") for p in t["parts"]) else "") for t in tracks
+            if any(plays(p) for p in t["parts"])]
 
 
 if __name__ == "__main__":
@@ -130,7 +135,7 @@ if __name__ == "__main__":
                  '  with the XML: only the groups of tracks that play in that export')
     res = output_groups(Path(sys.argv[1]))
     if len(sys.argv) == 3:
-        playing = playing_tracks(Path(sys.argv[2]))
+        playing = [n.removesuffix(" (audio)") for n in playing_tracks(Path(sys.argv[2]))]
         missing = [n for n in playing if n not in res]
         res = {n: res[n] for n in playing if n in res}
         if missing:

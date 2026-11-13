@@ -80,6 +80,10 @@ class PlayingTracksTests(unittest.TestCase):
             self.assertEqual(cr.playing_tracks(xml), [])
             xml.write_text(FULL.replace('<int name="Flags" value="2"/>\n                        </obj>', '</obj>'), encoding="utf-8")
             self.assertEqual(cr.playing_tracks(xml), ["Kick&Snare"])
+            audio = '<obj class="MAudioTrackEvent" ID="90"><obj class="MListNode" name="Node" ID="91"><string name="Name" value="Ride"/>' \
+                    '<list name="Events" type="obj"><obj class="MAudioEvent" ID="92"><float name="Start" value="0"/><float name="Length" value="960"/></obj></list></obj></obj>'
+            xml.write_text(FULL.replace('      <obj class="MMarkerTrackEvent"', audio + '\n      <obj class="MMarkerTrackEvent"'), encoding="utf-8")
+            self.assertEqual(cr.playing_tracks(xml), ["Ride (audio)"])
 
 
 if __name__ == "__main__":
