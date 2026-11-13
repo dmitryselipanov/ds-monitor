@@ -72,8 +72,9 @@ original. The slim file keeps:
 - the project tempo map and time signatures (audio files' own tempo maps are
   renamed `xMTempoEvent` so the importer ignores them)
 - every MIDI/instrument track: name, parts and notes, with mute flags
-  (`<ds_tracks>` JSON). Audio tracks are left out; disabled tracks are never in
-  Cubase's export.
+  (`<ds_tracks>` JSON). Audio tracks keep only their regions (no audio data), so
+  DS Scoring can show an instrument as used without counting playing time;
+  disabled tracks are never in Cubase's export.
 
 It also reads the project's `.cpr` (same name next to the XML, else the newest `.cpr`
 in that folder) with `cpr_routing.py` and adds each track's **output group**
