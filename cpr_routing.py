@@ -129,7 +129,35 @@ def playing_tracks(xml_path: Path) -> list[str]:
             if any(plays(p) for p in t["parts"])]
 
 
+def debug(path: Path, names: list[str]):
+    """Print what the file holds around each named track, to see how its routing is stored."""
+    b = Path(path).read_bytes()
+    every = {uid: (typ, name) for uid, typ, name in buses(b)}
+    groups = group_names(b)
+    recs = track_outputs(b)
+    for want in names:
+        print(f"=== {want}")
+        mine = [(n, o) for n, o in recs if n == want]
+        print(f"  track records (RecorderBus name): {len(mine)}")
+        for n, o in mine[:5]:
+            print(f"    output id {o} -> group {groups.get(o)!r}, any bus {every.get(o)!r}")
+        raw = want.encode()
+        hits, i = [], b.find(raw)
+        while i >= 0 and len(hits) < 12:
+            hits.append(i)
+            i = b.find(raw, i + 1)
+        print(f"  name found {len(hits)}{'+' if len(hits) == 12 else ''} times in the file")
+        for h in hits[:8]:
+            before = re.findall(rb"[A-Za-z][A-Za-z ]{2,}", b[max(0, h - 160):h])
+            after = re.findall(rb"[A-Za-z][A-Za-z ]{2,}", b[h + len(raw):h + len(raw) + 400])
+            print(f"   @{h}: before {[x.decode() for x in before[-6:]]}")
+            print(f"           after  {[x.decode() for x in after[:14]]}")
+
+
 if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == "--debug":
+        debug(Path(sys.argv[2]), sys.argv[3:])
+        sys.exit()
     if len(sys.argv) not in (2, 3):
         sys.exit('usage: python3 cpr_routing.py "/path/project.cpr" ["/path/cue export.xml"]\n'
                  '  with the XML: only the groups of tracks that play in that export')
