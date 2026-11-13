@@ -81,12 +81,40 @@ def track_outputs(b: bytes) -> list[tuple[str, int | None]]:
     return rows
 
 
+CHANNEL = b"VST Multitrack"            # every audio/instrument channel record starts with this
+STRING_VALUE = b"String\x00\x00\x08\x00\x00\x00"   # then ...Name ... String <len><name>
+
+
+def channel_outputs(b: bytes) -> list[tuple[str, int | None]]:
+    """(channel name, output bus uid) per mixer channel. Audio tracks only have this kind of
+    record (no RecorderBus name), instrument tracks have both. The output is the first
+    OutputBusValue after the channel's name and before the next channel."""
+    chans = _positions(b, CHANNEL)
+    outs = _positions(b, TRACK_OUT)
+    rows = []
+    for k, c in enumerate(chans):
+        sv = b.find(STRING_VALUE, c, c + 300)
+        if sv < 0:
+            continue
+        j = sv + len(STRING_VALUE)
+        n = b[j]
+        name = b[j + 1:j + n].split(b"\x00")[0].decode("utf-8", "replace").strip()
+        end = chans[k + 1] if k + 1 < len(chans) else len(b)
+        o = bisect.bisect_left(outs, j)
+        out = int.from_bytes(b[outs[o] + len(TRACK_OUT):outs[o] + len(TRACK_OUT) + 8], "big") \
+            if o < len(outs) and outs[o] < end else None
+        rows.append((name, out))
+    return rows
+
+
 def output_groups(path: Path) -> dict[str, str]:
     try:
         b = Path(path).read_bytes()
         groups = group_names(b)
         result = {}
-        for name, out in track_outputs(b):
+        # instrument tracks' RecorderBus records first (proven on the template), then mixer
+        # channel records, which also cover audio tracks
+        for name, out in track_outputs(b) + channel_outputs(b):
             g = groups.get(out)
             # A name can have several records (stale copies in the file): keep the first
             # that points at a real section group ("07b_STR HIGH LONGS DRY").
@@ -141,7 +169,16 @@ def debug(path: Path, names: list[str]):
         print(f"  track records (RecorderBus name): {len(mine)}")
         for n, o in mine[:5]:
             print(f"    output id {o} -> group {groups.get(o)!r}, any bus {every.get(o)!r}")
+        ch = [(n, o) for n, o in channel_outputs(b) if n == want]
+        print(f"  channel records (VST Multitrack): {len(ch)}")
+        for n, o in ch[:5]:
+            print(f"    output id {o} -> group {groups.get(o)!r}, any bus {every.get(o)!r}")
         raw = want.encode()
+        for c in _positions(b, CHANNEL):
+            if raw in b[c:c + 300]:
+                k = b.find(b"String", c, c + 300)
+                print(f"  bytes after 'String': {b[k:k + 24 + len(raw)]!r}")
+                break
         hits, i = [], b.find(raw)
         while i >= 0 and len(hits) < 12:
             hits.append(i)

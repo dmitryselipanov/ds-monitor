@@ -19,6 +19,13 @@ def track(name, out_uid):
     return b"..track.." + out + b"..." + cr.TRACK_NAME + bytes([len(raw) + 1]) + raw + b"..."
 
 
+def channel(name, out_uid):
+    """An audio track's mixer channel: no RecorderBus record, only VST Multitrack + String name."""
+    raw = name.encode() + b"\x00"
+    return (b"..." + cr.CHANNEL + b"\x00\x00RuntimeID\x00\x00Name\x00" + cr.STRING_VALUE + bytes([len(raw) + 1]) + raw
+            + b"..plugins.." + cr.TRACK_OUT + out_uid.to_bytes(8, "big") + b"...")
+
+
 # Same patterns the template reader matched on Orchestral_v16 (groups 14, FX 17; an
 # instrument channel with a colliding id, type 20, must not win).
 CPR = (b"header" + bus(10962, 14, "12l_SYNTH PADS LOW DRY") + bus(10970, 14, "07b_STR HIGH LONGS DRY")
@@ -27,7 +34,9 @@ CPR = (b"header" + bus(10962, 14, "12l_SYNTH PADS LOW DRY") + bus(10970, 14, "07
        + track("New Track Without Preset", 10962) + track("No Output", None)
        + track("SF AS Vlns I Legato", 10962)   # stale second record: the first one wins
        + track("SF Harp Main", 10980)
-       + track("12l_SYNTH PADS LOW DRY", 10970))   # a group channel's own record: not a track
+       + track("12l_SYNTH PADS LOW DRY", 10970)   # a group channel's own record: not a track
+       + channel("Noise Beat", 10990) + bus(10990, 14, "12f_SYNTH PERC MID SUM")
+       + channel("Propheeet", 10970))             # the RecorderBus record already placed it: kept
 
 
 class CprRoutingTests(unittest.TestCase):
@@ -45,6 +54,7 @@ class CprRoutingTests(unittest.TestCase):
             "SF AS Vlns I Legato": "07b_STR HIGH LONGS DRY",
             "New Track Without Preset": "12l_SYNTH PADS LOW DRY",
             "SF Harp Main": "05a_HARP DRY",
+            "Noise Beat": "12f_SYNTH PERC MID SUM",
         })
 
     def test_unreadable_file_gives_nothing(self):
