@@ -58,6 +58,30 @@ waits until the export is really finished — unchanged, header sizes written,
 and no longer open in Cubase — and copies again if the file changes later. The
 log says why any WAV was not published. The original stays in `Mixdown`.
 
+## Cubase XML exports: slimmed automatically
+
+Export each cue version as a **full** track XML: select all tracks, then
+File → Export → Selected Tracks, named like the `.cpr` (`2m29 The Gift V2.xml`).
+These run to ~250 MB, almost all plugin state and controller data.
+
+When one appears in a watched folder, DS Monitor (`xml_slim.py`) reads it piece by
+piece and writes a slim file of ~100 KB **under the same name**, then deletes the
+original. The slim file keeps:
+
+- every marker, copied unchanged and tagged with its marker track (`ds_track="Cue"`)
+- the project tempo map and time signatures (audio files' own tempo maps are
+  renamed `xMTempoEvent` so the importer ignores them)
+- every MIDI/instrument track: name, parts and notes, with mute flags
+  (`<ds_tracks>` JSON). Audio tracks are left out; disabled tracks are never in
+  Cubase's export.
+
+The original is deleted only after all of these hold: the file is a complete Cubase
+export (every tag closed), no process has it open, it didn't change during
+conversion, and the slim file reads back with the same markers, tracks, parts and
+notes. Otherwise it is left untouched and checked again every 15 s (up to 20
+times); the log says why. Other XML files (not Cubase exports) are pushed as before,
+unchanged. The slim file is what goes to DS Scoring's `pending_imports`.
+
 Orchestration assistant for Cubase. Watches `~/Documents/projects` for CPR saves, extracts active MIDI tracks, and runs them through Claude for orchestration feedback.
 
 ## Setup

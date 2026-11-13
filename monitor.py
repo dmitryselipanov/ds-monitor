@@ -382,12 +382,84 @@ def wait_for_stable_file(path: Path, interval=0.5, checks=3, timeout=60) -> bool
     return False
 
 
+XML_RETRY_SECONDS = 15.0  # a full export still being written is checked again after this
+XML_MAX_RETRIES = 20
+_xml_retries = {}
+_xml_slimmed = {}  # path -> (size, mtime_ns) of the slim file we just wrote in its place
+
+
+def _retry_xml(xml_path: Path, reason: str):
+    n = _xml_retries.get(xml_path, 0) + 1
+    if n > XML_MAX_RETRIES:
+        _xml_retries.pop(xml_path, None)
+        log(f"[xml] {xml_path.name}: giving up after {XML_MAX_RETRIES} tries ({reason}) — original left as is")
+        return
+    _xml_retries[xml_path] = n
+    log(f"[xml] {xml_path.name}: {reason} — trying again in {XML_RETRY_SECONDS:.0f}s ({n}/{XML_MAX_RETRIES})")
+    t = threading.Timer(XML_RETRY_SECONDS, handle_xml, args=(xml_path,))
+    t.daemon = True
+    t.start()
+
+
+def slim_xml_in_place(xml_path: Path) -> bool:
+    """Replace a full Cubase export with its slim version (same name). False = not ready yet."""
+    from xml_slim import replace_with_slim, SlimError
+    from wav_check import file_is_open
+    try:
+        stats = replace_with_slim(xml_path, is_open=file_is_open)
+    except SlimError as e:
+        msg = str(e)
+        if msg.startswith("not a Cubase track export") or msg == "already slim":
+            return True  # not ours to shrink; handled as before
+        _retry_xml(xml_path, msg)
+        return False
+    except Exception as e:
+        _retry_xml(xml_path, f"slimming failed: {e}")
+        return False
+    _xml_retries.pop(xml_path, None)
+    if stats:
+        st = xml_path.stat()
+        _xml_slimmed[xml_path] = (st.st_size, st.st_mtime_ns)
+        log(f"[xml] slimmed {xml_path.name}: {stats['original_bytes'] / 1e6:.1f} MB → "
+            f"{stats['slim_bytes'] / 1e3:.0f} KB, original deleted "
+            f"({stats['range_markers']} cue markers, {stats['tracks']} MIDI tracks, "
+            f"{stats['notes']} notes, {stats['muted_parts']} muted parts)")
+    return True
+
+
+_xml_active = set()
+_xml_active_lock = threading.Lock()
+
+
 def handle_xml(xml_path: Path):
-    """Push raw XML content to pending_imports for DS Scoring to parse."""
+    """One run per file at a time: a retry timer and a new write event can both fire."""
+    with _xml_active_lock:
+        if xml_path in _xml_active:
+            log(f"[xml] {xml_path.name} already being handled — skipped")
+            return
+        _xml_active.add(xml_path)
+    try:
+        _handle_xml(xml_path)
+    finally:
+        with _xml_active_lock:
+            _xml_active.discard(xml_path)
+
+
+def _handle_xml(xml_path: Path):
+    """Slim a full Cubase export in place, then push it to pending_imports for DS Scoring."""
     log(f"[xml detected] {xml_path.name} (full: {xml_path})")
     log(f"[xml] inside watch? {any(str(xml_path).lower().startswith(str(wd).lower()) for wd in ALL_WATCH_DIRS)}")
+    try:
+        st = xml_path.stat()
+        if _xml_slimmed.get(xml_path) == (st.st_size, st.st_mtime_ns):
+            log(f"[xml] {xml_path.name} is the slim file just written and pushed — skipped")
+            return
+    except FileNotFoundError:
+        return
     if not wait_for_stable_file(xml_path):
-        log(f"[xml] {xml_path.name} still changing or gone — skipped")
+        _retry_xml(xml_path, "still changing")
+        return
+    if not slim_xml_in_place(xml_path):
         return
     try:
         raw_xml = xml_path.read_text(encoding='utf-8', errors='ignore')
