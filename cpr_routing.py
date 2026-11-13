@@ -14,6 +14,7 @@ back to the track name). Never raises on a malformed file: returns {} instead.
 """
 
 import bisect
+import re
 import sys
 from pathlib import Path
 
@@ -23,6 +24,7 @@ BUS_TYPE = b'\x00\x00\x00\tBus Type\x00\x00\x01'
 NAME_END = b'\x00\xef\xbb\xbf'    # names are UTF-8 followed by this terminator
 NAME_START = b'\x00\x00\x08\x00\x00\x00'
 TRACK_NAME = b'RecorderBus\x00\x00\x02\x00\x06\x00\x00\x00\x05\x00\x00\x00\x05Name\x00\x00\x08\x00\x00\x00'
+BUS_NAME = re.compile(r"^\d\d[a-z]?_")
 TRACK_OUT = b'OutputBusValue\x00\x00\x02\x00\x06\x00\x00\x00\x01\x00\x00\x00\x06Value\x00\x00\x01'
 
 
@@ -88,7 +90,8 @@ def output_groups(path: Path) -> dict[str, str]:
             g = groups.get(out)
             # A name can have several records (stale copies in the file): keep the first
             # that points at a real section group ("07b_STR HIGH LONGS DRY").
-            if name and g and name not in result and g[:2].isdigit():
+            # Group and FX channels have records too ("01a_WW MELODY SUM" → "01_WW ALL"): skip them
+            if name and g and name not in result and g[:2].isdigit() and not BUS_NAME.match(name):
                 result[name] = g
         return result
     except Exception:
@@ -102,15 +105,40 @@ def find_project(xml_path: Path) -> Path | None:
     same = xml_path.with_suffix(".cpr")
     if same.exists():
         return same
-    import re
     cprs = [p for p in xml_path.parent.glob("*.cpr") if not re.search(r"-\d{2}$", p.stem)]
     return max(cprs, key=lambda p: p.stat().st_mtime) if cprs else None
 
 
+def playing_tracks(xml_path: Path) -> list[str]:
+    """MIDI tracks with at least one unmuted note in a Cubase XML export (full or slim)."""
+    import json
+    text = Path(xml_path).read_text(encoding="utf-8", errors="replace")
+    m = re.search(r"<ds_tracks><!\[CDATA\[(.*?)\]\]></ds_tracks>", text, re.S)
+    if m:
+        tracks = json.loads(m.group(1))
+    else:
+        from xml_slim import slim
+        text, _ = slim(Path(xml_path))
+        tracks = json.loads(re.search(r"<ds_tracks><!\[CDATA\[(.*?)\]\]></ds_tracks>", text, re.S).group(1))
+    return [t["name"] for t in tracks
+            if any(not p["m"] & 2 and any(not (n[3] or 0) & 2 for n in p["n"]) for p in t["parts"])]
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit('usage: python3 cpr_routing.py "/path/project.cpr"')
+    if len(sys.argv) not in (2, 3):
+        sys.exit('usage: python3 cpr_routing.py "/path/project.cpr" ["/path/cue export.xml"]\n'
+                 '  with the XML: only the groups of tracks that play in that export')
     res = output_groups(Path(sys.argv[1]))
-    for name, g in sorted(res.items(), key=lambda kv: (kv[1], kv[0].lower())):
-        print(f"{g:<36} {name}")
-    print(f"\n{len(res)} tracks with an output group")
+    if len(sys.argv) == 3:
+        playing = playing_tracks(Path(sys.argv[2]))
+        missing = [n for n in playing if n not in res]
+        res = {n: res[n] for n in playing if n in res}
+        if missing:
+            print("No output group (named from the track name instead): " + ", ".join(missing) + "\n")
+    by_group = {}
+    for name, g in res.items():
+        by_group.setdefault(g, []).append(name)
+    for g in sorted(by_group):
+        names = sorted(by_group[g], key=str.lower)
+        print(f"{g}  ({len(names)})\n    " + ", ".join(names))
+    print(f"\n{len(res)} tracks in {len(by_group)} groups")

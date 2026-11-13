@@ -26,7 +26,8 @@ CPR = (b"header" + bus(10962, 14, "12l_SYNTH PADS LOW DRY") + bus(10970, 14, "07
        + track("Propheeet", 10962) + track("SF AS Vlns I Legato", 10970) + track("Sketch Piano I", 300)
        + track("New Track Without Preset", 10962) + track("No Output", None)
        + track("SF AS Vlns I Legato", 10962)   # stale second record: the first one wins
-       + track("SF Harp Main", 10980))
+       + track("SF Harp Main", 10980)
+       + track("12l_SYNTH PADS LOW DRY", 10970))   # a group channel's own record: not a track
 
 
 class CprRoutingTests(unittest.TestCase):
@@ -66,6 +67,19 @@ class CprRoutingTests(unittest.TestCase):
         self.assertEqual(stats["grouped"], 1)
         tracks = json.loads(re.search(r"CDATA\[(.*)\]\]>", xml.read_text(), re.S).group(1))
         self.assertEqual({t["name"]: t.get("g") for t in tracks}, {"Kick&Snare": "03d_SNARES DRY", "Vln I": None})
+
+
+class PlayingTracksTests(unittest.TestCase):
+    def test_only_tracks_with_unmuted_notes(self):
+        with tempfile.TemporaryDirectory() as d:
+            xml = Path(d) / "cue.xml"
+            xml.write_text(FULL, encoding="utf-8")
+            # Kick&Snare: one muted part, and a muted note in the other part → plays nothing
+            self.assertEqual(cr.playing_tracks(xml), [])
+            replace_with_slim(xml)
+            self.assertEqual(cr.playing_tracks(xml), [])
+            xml.write_text(FULL.replace('<int name="Flags" value="2"/>\n                        </obj>', '</obj>'), encoding="utf-8")
+            self.assertEqual(cr.playing_tracks(xml), ["Kick&Snare"])
 
 
 if __name__ == "__main__":
