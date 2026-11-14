@@ -538,6 +538,7 @@ def check_routing_now():
             issues, skipped = only_enabled(issues, enabled)
             log(f"[routing] enabled tracks from {export.name}; skipped (disabled or added since): {', '.join(skipped) or 'none'}")
         else:
+            skipped = []
             log("[routing] no XML export next to the project yet: disabled tracks can't be told apart")
     except Exception as e:
         log(f"[routing] check failed: {e}")
@@ -550,7 +551,13 @@ def check_routing_now():
     for i in issues:
         log(f"[routing] {project.stem}: {describe(i)}")
     _routing("issues" if issues else "ok", project.stem, [short(i) for i in issues], secs)
-    routing_state["note"] = "" if enabled is not None else "No XML export next to this project yet, so disabled tracks are included."
+    if enabled is None:
+        routing_state["note"] = "No XML export next to this project yet, so disabled tracks are included."
+    elif skipped:
+        routing_state["note"] = (f"Skipped (not enabled in {export.name}): " + ", ".join(skipped[:8])
+                                 + (" …" if len(skipped) > 8 else ""))
+    else:
+        routing_state["note"] = ""
     if issues:
         names = ", ".join(i["track"] for i in issues[:4]) + (" …" if len(issues) > 4 else "")
         notify("DS Monitor", f"{project.stem}: {len(issues)} routing issue{'s' if len(issues) != 1 else ''}", names)
@@ -1508,7 +1515,8 @@ class DSMonitorApp(rumps.App):
         r = routing_state
         routing_state["alert"] = False
         if r["status"] == "ok":
-            rumps.alert(f"{r['project']}: routing OK", "No issues in tracks added or changed since the template.")
+            note = f"\n\n{r['note']}" if r.get("note") else ""
+            rumps.alert(f"{r['project']}: routing OK", "No issues in tracks added or changed since the template." + note)
         elif r["status"] == "issues":
             n = len(r["lines"])
             more = f"\n… and {n - 15} more (see the menu)" if n > 15 else ""
