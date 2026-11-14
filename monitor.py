@@ -550,8 +550,8 @@ def check_routing_now():
         f"(find {t_find:.1f}s, template {t_tmpl:.1f}s, read {len(data) / 1e6:.0f} MB {t_read:.1f}s, parse {t_parse:.1f}s)")
     for i in issues:
         log(f"[routing] {project.stem}: {describe(i)}")
-    note = [] if enabled is not None else ["(no XML export yet, so disabled tracks are included)"]
-    _routing("issues" if issues else "ok", project.stem, [short(i) for i in issues] + (note if issues else []), secs)
+    _routing("issues" if issues else "ok", project.stem, [short(i) for i in issues], secs)
+    routing_state["note"] = "" if enabled is not None else "No XML export next to this project yet, so disabled tracks are included."
     if issues:
         names = ", ".join(i["track"] for i in issues[:4]) + (" …" if len(issues) > 4 else "")
         notify("DS Monitor", f"{project.stem}: {len(issues)} routing issue{'s' if len(issues) != 1 else ''}", names)
@@ -1513,7 +1513,8 @@ class DSMonitorApp(rumps.App):
         elif r["status"] == "issues":
             n = len(r["lines"])
             more = f"\n… and {n - 15} more (see the menu)" if n > 15 else ""
-            rumps.alert(f"{r['project']}: {n} routing issue{'s' if n != 1 else ''}", "\n".join(r["lines"][:15]) + more)
+            note = f"\n\n{r['note']}" if r.get("note") else ""
+            rumps.alert(f"{r['project']}: {n} routing issue{'s' if n != 1 else ''}", "\n".join(r["lines"][:15]) + more + note)
         elif r["status"] == "error":
             rumps.alert("Check Routing", "\n".join(r["lines"]))
 
