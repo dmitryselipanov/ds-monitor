@@ -510,7 +510,7 @@ def check_routing_now():
     """Menu item: compare the last saved project's routing with the template and report slips in
     tracks added or re-routed since. Save in Cubase (Cmd+S) first: it reads the file on disk.
     The result shows in the menu (and as a notification, when macOS allows them)."""
-    from cpr_routing import routing_records, template_records, project_issues, describe, short
+    from cpr_routing import routing_records, template_records, project_issues, describe, short, enabled_tracks
     t0 = time.time()
     _routing("checking")
     project = newest_project()
@@ -532,6 +532,14 @@ def check_routing_now():
         t1 = time.time(); data = project.read_bytes(); t_read = time.time() - t1
         t1 = time.time(); proj = routing_records(data); t_parse = time.time() - t1
         issues = project_issues(proj, tmpl)
+        # disabled tracks aren't checked: only those enabled at the latest export of this cue
+        enabled, export = enabled_tracks(project)
+        if enabled is not None:
+            skipped = [i["track"] for i in issues if i["track"] not in enabled]
+            issues = [i for i in issues if i["track"] in enabled]
+            log(f"[routing] enabled tracks from {export.name}; skipped (disabled or added since): {', '.join(skipped) or 'none'}")
+        else:
+            log("[routing] no XML export next to the project yet: disabled tracks can't be told apart")
     except Exception as e:
         log(f"[routing] check failed: {e}")
         _routing("error", project.stem, [f"Couldn't read the project's routing: {e}"[:120]])
@@ -542,7 +550,8 @@ def check_routing_now():
         f"(find {t_find:.1f}s, template {t_tmpl:.1f}s, read {len(data) / 1e6:.0f} MB {t_read:.1f}s, parse {t_parse:.1f}s)")
     for i in issues:
         log(f"[routing] {project.stem}: {describe(i)}")
-    _routing("issues" if issues else "ok", project.stem, [short(i) for i in issues], secs)
+    note = [] if enabled is not None else ["(no XML export yet, so disabled tracks are included)"]
+    _routing("issues" if issues else "ok", project.stem, [short(i) for i in issues] + (note if issues else []), secs)
     if issues:
         names = ", ".join(i["track"] for i in issues[:4]) + (" …" if len(issues) > 4 else "")
         notify("DS Monitor", f"{project.stem}: {len(issues)} routing issue{'s' if len(issues) != 1 else ''}", names)

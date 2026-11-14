@@ -196,6 +196,24 @@ class RealRecordsTests(unittest.TestCase):
         self.assertNotIn("Iceni Swells", chosen)
 
 
+class EnabledTracksTests(unittest.TestCase):
+    def test_names_from_the_newest_slim_export(self):
+        import os, time
+        with tempfile.TemporaryDirectory() as d:
+            cpr = Path(d) / "3m30 Still Here.cpr"
+            cpr.write_bytes(b"x")
+            self.assertEqual(cr.enabled_tracks(cpr), (None, None))
+            old, new = Path(d) / "3m30 Still Here V1.xml", Path(d) / "3m30 Still Here V2.xml"
+            old.write_text(FULL); replace_with_slim(old)
+            new.write_text(FULL); replace_with_slim(new)
+            os.utime(old, (time.time() - 100, time.time() - 100))
+            names, src = cr.enabled_tracks(cpr)
+            self.assertEqual(src, new)
+            self.assertTrue(names)
+            (Path(d) / "notes.xml").write_text("<x/>")          # not a slim export: ignored
+            self.assertEqual(cr.enabled_tracks(cpr)[1], new)
+
+
 class PlayingTracksTests(unittest.TestCase):
     def test_only_tracks_with_unmuted_notes(self):
         with tempfile.TemporaryDirectory() as d:

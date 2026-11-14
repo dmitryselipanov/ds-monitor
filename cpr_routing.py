@@ -285,6 +285,24 @@ def describe(issue: dict) -> str:
     return f'{issue["track"]}: outputs to Stereo Out (or nothing), not a section group.'
 
 
+def enabled_tracks(project_cpr: Path) -> tuple[set | None, Path | None]:
+    """Names of the tracks that were enabled at the project's newest XML export (Cubase never
+    exports disabled tracks), from the slim XMLs DS Monitor keeps next to the .cpr.
+    (None, None) when there is no export yet. The .cpr has no readable "disabled" flag."""
+    import json
+    from xml_slim import is_slim
+    folder = Path(project_cpr).parent
+    xmls = sorted((x for x in folder.glob("*.xml") if is_slim(x)), key=lambda x: x.stat().st_mtime, reverse=True)
+    for x in xmls:
+        try:
+            m = re.search(r"<ds_tracks><!\[CDATA\[(.*?)\]\]></ds_tracks>", x.read_text(encoding="utf-8", errors="replace"), re.S)
+            if m:
+                return {t["name"] for t in json.loads(m.group(1)) if t.get("name")}, x
+        except (OSError, ValueError):
+            continue
+    return None, None
+
+
 def short(issue: dict) -> str:
     """One short line for the menu and the result window."""
     g = issue["groups"]
