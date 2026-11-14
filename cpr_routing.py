@@ -233,13 +233,16 @@ def project_issues(project: dict[str, list], template: dict[str, list]) -> list[
         known = name in template
         t = set(g for g in template.get(name, []) if g)
         changed = [g for g in p if g not in t]
-        if known and not changed:
+        # a track now going to Stereo Out (or nothing) where the template's track of that name
+        # went to a group: re-routed, or a copy of it routed straight out
+        lost_group = None in outs and (not known or None not in template[name])
+        if known and not changed and not lost_group:
             continue
         if len(p) > 1 and changed:
             issues.append({"track": name, "kind": "same", "groups": p})
         elif any(_group_rank(g) == 1 for g in (changed if known else p)):
             issues.append({"track": name, "kind": "bus", "groups": [g for g in p if _group_rank(g) == 1][:1]})
-        elif not p and not known:
+        elif lost_group:
             issues.append({"track": name, "kind": "none", "groups": []})
     return issues
 
@@ -254,7 +257,7 @@ def describe(issue: dict) -> str:
         return f'{issue["track"]}: tracks with this name go to different groups ({", ".join(g)}). Rename one or fix its output.'
     if issue["kind"] == "bus":
         return f'{issue["track"]}: outputs into {g[0]}, not a section group. Usually it should go to that section\'s DRY group.'
-    return f'{issue["track"]}: plays but outputs to no group (Stereo Out or nothing).'
+    return f'{issue["track"]}: outputs to Stereo Out (or nothing), not a section group.'
 
 
 def find_project(xml_path: Path) -> Path | None:

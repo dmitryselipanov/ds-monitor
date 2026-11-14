@@ -92,7 +92,9 @@ To check *before* exporting, save in Cubase (Cmd+S) and choose **Check Routing**
 DS Monitor menu. It compares the saved project with the template (default
 `~/Library/Preferences/Cubase 15/Project Templates/Orchestral_v16 Colors.cpr`, or
 `"routing_template"` in `~/.ds-monitor-config.json`) and reports slips only in tracks added
-or re-routed since the template. The template's routing is cached in
+or re-routed since the template, including tracks now going straight to Stereo Out. The result
+shows in the menu under Check Routing (OK, or each issue on its own line) and in the log with
+how long each step took; a Mac notification too when macOS allows them. The template's routing is cached in
 `~/Library/Caches/ds-monitor/template-routing.json` until the template file changes.
 
 The original is deleted only after all of these hold: the file is a complete Cubase

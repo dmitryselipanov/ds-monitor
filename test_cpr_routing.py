@@ -128,10 +128,17 @@ class CheckRoutingTests(unittest.TestCase):
             "SF Harp Main": ["05a_HARP RVB"],                       # re-routed into a reverb sum
             "Gtr": ["13_BAND ALL"],                                 # new and fine
             "Dx": [None],                                           # utility
+            "Propheeet": ["12l_SYNTH PADS LOW DRY", None],          # a copy routed straight to Stereo Out
         })
         issues = cr.project_issues(project, self.TEMPLATE)
         self.assertEqual([(i["track"], i["kind"]) for i in issues],
-                         [("New Synth", "none"), ("Noise Beat", "bus"), ("Ride", "same"), ("SF Harp Main", "bus")])
+                         [("New Synth", "none"), ("Noise Beat", "bus"), ("Propheeet", "none"),
+                          ("Ride", "same"), ("SF Harp Main", "bus")])
+
+    def test_template_track_rerouted_to_stereo_out(self):
+        project = dict(self.TEMPLATE, **{"SF Harp Main": [None]})
+        self.assertEqual([(i["track"], i["kind"]) for i in cr.project_issues(project, self.TEMPLATE)],
+                         [("SF Harp Main", "none")])
 
     def test_records_keep_unrouted_tracks_and_skip_channels(self):
         rec = cr.routing_records(CPR)

@@ -468,17 +468,24 @@ def newest_project() -> Path | None:
     watched folders (Cubase's numbered backups skipped)."""
     if _last_saved_cpr and _last_saved_cpr.exists():
         return _last_saved_cpr
-    best = None
+    best, best_m = None, 0.0
     for root in ALL_WATCH_DIRS:
-        for p in Path(root).rglob("*.cpr"):
-            if re.search(r"-\d{2}$", p.stem):
-                continue
-            try:
-                if best is None or p.stat().st_mtime > best.stat().st_mtime:
-                    best = p
-            except OSError:
-                pass
+        for d, dirs, files in os.walk(root):
+            # project folders hold thousands of audio/video files: don't walk into them
+            dirs[:] = [x for x in dirs if not x.startswith(".") and x.lower() not in _NO_CPR_DIRS]
+            for f in files:
+                if f.endswith(".cpr") and not re.search(r"-\d{2}\.cpr$", f):
+                    try:
+                        m = os.stat(os.path.join(d, f)).st_mtime
+                    except OSError:
+                        continue
+                    if m > best_m:
+                        best, best_m = Path(d) / f, m
     return best
+
+
+_NO_CPR_DIRS = {"audio", "edits", "images", "mixdown", "video exports", "auto saves", "freeze",
+                "track pictures", "fades", "presets", "stems", "bounces", "video", "renders"}
 
 
 def notify(title: str, subtitle: str, body: str):
@@ -491,28 +498,52 @@ def notify(title: str, subtitle: str, body: str):
         log(f"[notify] failed: {e}")
 
 
+routing_state = {"status": "", "project": "", "lines": [], "secs": 0.0, "version": 0}
+
+
+def _routing(status, project="", lines=None, secs=0.0):
+    routing_state.update(status=status, project=project, lines=lines or [], secs=secs,
+                         version=routing_state["version"] + 1)
+
+
 def check_routing_now():
     """Menu item: compare the last saved project's routing with the template and report slips in
-    tracks added or re-routed since. Save in Cubase (Cmd+S) first: it reads the file on disk."""
-    from cpr_routing import check_project, describe
+    tracks added or re-routed since. Save in Cubase (Cmd+S) first: it reads the file on disk.
+    The result shows in the menu (and as a notification, when macOS allows them)."""
+    from cpr_routing import routing_records, template_records, project_issues, describe
+    t0 = time.time()
+    _routing("checking")
     project = newest_project()
+    t_find = time.time() - t0
     if not project:
+        _routing("error", lines=["No saved Cubase project found in the watched folders."])
         notify("DS Monitor", "Check Routing", "No saved Cubase project found in the watched folders.")
         return
+    _routing("checking", project.stem)
     template = routing_template()
     if not template.exists():
         log(f"[routing] template not found: {template}")
+        _routing("error", project.stem, ['Template not found. Set "routing_template" in ~/.ds-monitor-config.json.'])
         notify("DS Monitor", "Check Routing", 'Template not found. Set "routing_template" in ~/.ds-monitor-config.json.')
         return
-    log(f"[routing] checking {project.name} against {template.name}")
+    log(f"[routing] checking {project} against {template.name}")
     try:
-        issues = check_project(project, template)
+        t1 = time.time(); tmpl = template_records(template); t_tmpl = time.time() - t1
+        t1 = time.time(); data = project.read_bytes(); t_read = time.time() - t1
+        t1 = time.time(); proj = routing_records(data); t_parse = time.time() - t1
+        issues = project_issues(proj, tmpl)
     except Exception as e:
         log(f"[routing] check failed: {e}")
+        _routing("error", project.stem, [f"Couldn't read the project's routing: {e}"[:120]])
         notify("DS Monitor", f"Check Routing: {project.stem}", "Couldn't read the project's routing.")
         return
-    for i in issues:
-        log(f"[routing] {project.stem}: {describe(i)}")
+    secs = time.time() - t0
+    log(f"[routing] {project.stem}: {len(proj)} tracks, {len(issues)} issue(s) in {secs:.1f}s "
+        f"(find {t_find:.1f}s, template {t_tmpl:.1f}s, read {len(data) / 1e6:.0f} MB {t_read:.1f}s, parse {t_parse:.1f}s)")
+    lines = [describe(i) for i in issues]
+    for l in lines:
+        log(f"[routing] {project.stem}: {l}")
+    _routing("issues" if issues else "ok", project.stem, lines, secs)
     if issues:
         names = ", ".join(i["track"] for i in issues[:4]) + (" …" if len(issues) > 4 else "")
         notify("DS Monitor", f"{project.stem}: {len(issues)} routing issue{'s' if len(issues) != 1 else ''}", names)
@@ -1455,9 +1486,35 @@ class DSMonitorApp(rumps.App):
         self.routing_item = rumps.MenuItem("Check Routing (save first)", callback=self.check_routing)
         self.menu = ["Idle — waiting for save", None, self.routing_item, self.ai_item, None, rumps.MenuItem("Quit DS//Monitor", callback=rumps.quit_application)]
         self._last_status = "idle"
+        self._routing_version = 0
 
     def check_routing(self, _):
+        if routing_state["status"] == "checking":
+            return
+        _routing("checking")
+        self.update_menu()
         threading.Thread(target=check_routing_now, daemon=True).start()
+
+    def routing_items(self):
+        """Check Routing, then its last result: OK, or each issue as its own line."""
+        r = routing_state
+        if r["status"] == "checking":
+            self.routing_item.title = "Checking routing…" + (f" ({r['project']})" if r["project"] else "")
+            return [self.routing_item]
+        self.routing_item.title = "Check Routing (save first)"
+        out = [self.routing_item]
+        when = f" — {r['secs']:.0f}s" if r["secs"] >= 1 else ""
+        if r["status"] == "ok":
+            out.append(rumps.MenuItem(f"✓ Routing OK: {r['project']}{when}", callback=None))
+        elif r["status"] == "issues":
+            n = len(r["lines"])
+            out.append(rumps.MenuItem(f"⚠ {n} routing issue{'s' if n != 1 else ''}: {r['project']}{when}", callback=None))
+            out.extend(rumps.MenuItem("    " + l[:90], callback=None) for l in r["lines"][:12])
+            if n > 12:
+                out.append(rumps.MenuItem(f"    … {n - 12} more in the log", callback=None))
+        elif r["status"] == "error":
+            out.extend(rumps.MenuItem("✗ " + l[:90], callback=None) for l in r["lines"])
+        return out
 
     def toggle_ai(self, _):
         global AI_ENABLED
@@ -1501,7 +1558,7 @@ class DSMonitorApp(rumps.App):
             items.append(rumps.MenuItem(f"Parsing {cue}…", callback=None))
 
         items.append(None)
-        items.append(self.routing_item)
+        items.extend(self.routing_items())
         items.append(self.ai_item)
         items.append(None)
         items.append(rumps.MenuItem("Quit DS//Monitor", callback=rumps.quit_application))
@@ -1515,8 +1572,10 @@ class DSMonitorApp(rumps.App):
 
     @rumps.timer(2)
     def refresh(self, _):
-        if state["status"] != self._last_status or state.get("checks") or state.get("summary"):
+        if state["status"] != self._last_status or state.get("checks") or state.get("summary") \
+                or routing_state["version"] != self._routing_version:
             self._last_status = state["status"]
+            self._routing_version = routing_state["version"]
             self.update_menu()
 
 
