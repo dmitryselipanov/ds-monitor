@@ -553,9 +553,6 @@ def check_routing_now():
     _routing("issues" if issues else "ok", project.stem, [short(i) for i in issues], secs)
     if enabled is None:
         routing_state["note"] = "No XML export next to this project yet, so disabled tracks are included."
-    elif skipped:
-        routing_state["note"] = (f"Skipped as disabled or hidden copies (per {export.name}): " + ", ".join(skipped[:8])
-                                 + (" …" if len(skipped) > 8 else ""))
     else:
         routing_state["note"] = ""
     if issues:
