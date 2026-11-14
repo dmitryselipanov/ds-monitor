@@ -379,7 +379,37 @@ def why(project: Path, template: Path):
         print(f"   channel records: {[show(o) for m, o in ch if m == n][:4]}")
 
 
+KEY_VALUE = re.compile(rb"\x00\x00\x00([\x03-\x30])([A-Za-z][A-Za-z0-9 _]{1,46})\x00\x00([\x01\x02\x03\x04\x05\x06\x08])")
+
+
+def keys(path: Path, names: list[str], before: int = 3000, after: int = 3000):
+    """Key=value pairs stored around each named track's records, to find where a flag such as
+    'disabled' lives: run it on a disabled and an enabled track and compare."""
+    b = Path(path).read_bytes()
+    for want in names:
+        raw = want.encode() + b"\x00"
+        hits, i = [], b.find(raw)
+        while i >= 0 and len(hits) < 6:
+            if b[i - 1:i] != b" ":
+                hits.append(i)
+            i = b.find(raw, i + 1)
+        print(f"=== {want}: {len(hits)} occurrence(s)")
+        for h in hits:
+            seg = b[max(0, h - before):h + after]
+            pairs = []
+            for m in KEY_VALUE.finditer(seg):
+                if len(m.group(2)) + 1 != m.group(1)[0]:
+                    continue
+                v = seg[m.end():m.end() + 8]
+                pos = m.start() + max(0, h - before) - h
+                pairs.append(f"{pos:+d} {m.group(2).decode()}={v.hex()}")
+            print(f"  @{h}: " + " | ".join(pairs))
+
+
 if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == "--keys":
+        keys(Path(sys.argv[2]), sys.argv[3:])
+        sys.exit()
     if len(sys.argv) >= 3 and sys.argv[1] == "--why":
         why(Path(sys.argv[2]), Path(sys.argv[3]) if len(sys.argv) > 3 else TEMPLATE_DEFAULT)
         sys.exit()
