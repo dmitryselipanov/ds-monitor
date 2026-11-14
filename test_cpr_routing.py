@@ -210,8 +210,22 @@ class EnabledTracksTests(unittest.TestCase):
             names, src = cr.enabled_tracks(cpr)
             self.assertEqual(src, new)
             self.assertTrue(names)
+            self.assertTrue(all(isinstance(v, int) for v in names.values()))
             (Path(d) / "notes.xml").write_text("<x/>")          # not a slim export: ignored
             self.assertEqual(cr.enabled_tracks(cpr)[1], new)
+
+
+class OnlyEnabledTests(unittest.TestCase):
+    def test_hidden_copy_on_stereo_out_is_not_the_enabled_track(self):
+        template = {}
+        project = {"SF Mandolin Grain": ["12m_SYNTH PADS HIGH DRY", None],   # visible → 12m, hidden copy → Stereo Out
+                   "Serum Pulse": [None],                                    # really on Stereo Out
+                   "Dup Pad": ["12l_SYNTH PADS LOW DRY", None],              # two enabled copies, one straight out
+                   "2 HORNS": ["07a_STR MELODY DLY"]}                        # disabled divider
+        issues = cr.project_issues(project, template)
+        keep, skipped = cr.only_enabled(issues, {"SF Mandolin Grain": 1, "Serum Pulse": 1, "Dup Pad": 2})
+        self.assertEqual([i["track"] for i in keep], ["Dup Pad", "Serum Pulse"])
+        self.assertEqual(sorted(skipped), ["2 HORNS", "SF Mandolin Grain"])
 
 
 class PlayingTracksTests(unittest.TestCase):

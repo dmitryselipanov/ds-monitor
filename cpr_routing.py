@@ -268,7 +268,9 @@ def project_issues(project: dict[str, list], template: dict[str, list]) -> list[
         elif any(_group_rank(g) == 1 for g in (changed if known else p)):
             issues.append({"track": name, "kind": "bus", "groups": [g for g in p if _group_rank(g) == 1][:1]})
         elif lost_group:
-            issues.append({"track": name, "kind": "none", "groups": []})
+            # "also": groups other records of this name go to (a disabled or hidden copy may be the
+            # one on Stereo Out; only_enabled() decides with the export's track count)
+            issues.append({"track": name, "kind": "none", "groups": [], "also": p})
     return issues
 
 
@@ -285,8 +287,8 @@ def describe(issue: dict) -> str:
     return f'{issue["track"]}: outputs to Stereo Out (or nothing), not a section group.'
 
 
-def enabled_tracks(project_cpr: Path) -> tuple[set | None, Path | None]:
-    """Names of the tracks that were enabled at the project's newest XML export (Cubase never
+def enabled_tracks(project_cpr: Path) -> tuple[dict | None, Path | None]:
+    """{name: how many tracks} enabled at the project's newest XML export (Cubase never
     exports disabled tracks), from the slim XMLs DS Monitor keeps next to the .cpr.
     (None, None) when there is no export yet. The .cpr has no readable "disabled" flag."""
     import json
@@ -297,10 +299,29 @@ def enabled_tracks(project_cpr: Path) -> tuple[set | None, Path | None]:
         try:
             m = re.search(r"<ds_tracks><!\[CDATA\[(.*?)\]\]></ds_tracks>", x.read_text(encoding="utf-8", errors="replace"), re.S)
             if m:
-                return {t["name"] for t in json.loads(m.group(1)) if t.get("name")}, x
+                count: dict[str, int] = {}
+                for t in json.loads(m.group(1)):
+                    if t.get("name"):
+                        count[t["name"]] = count.get(t["name"], 0) + 1
+                return count, x
         except (OSError, ValueError):
             continue
     return None, None
+
+
+def only_enabled(issues: list[dict], enabled: dict) -> tuple[list[dict], list[str]]:
+    """Issues of tracks enabled at the last export ({name: count}), and the names left out.
+    Records can't say which of several same-named channels is the enabled one, so a Stereo Out
+    record is dropped when the export has just one track of that name and another record of it
+    goes to a group (2m29: the visible SF Mandolin Grain → 12m, a hidden copy → Stereo Out)."""
+    keep, skipped = [], []
+    for i in issues:
+        n = enabled.get(i["track"], 0)
+        if not n or (i["kind"] == "none" and i.get("also") and n == 1):
+            skipped.append(i["track"])
+        else:
+            keep.append(i)
+    return keep, skipped
 
 
 def short(issue: dict) -> str:

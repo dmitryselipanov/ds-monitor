@@ -510,7 +510,7 @@ def check_routing_now():
     """Menu item: compare the last saved project's routing with the template and report slips in
     tracks added or re-routed since. Save in Cubase (Cmd+S) first: it reads the file on disk.
     The result shows in the menu (and as a notification, when macOS allows them)."""
-    from cpr_routing import routing_records, template_records, project_issues, describe, short, enabled_tracks
+    from cpr_routing import routing_records, template_records, project_issues, describe, short, enabled_tracks, only_enabled
     t0 = time.time()
     _routing("checking")
     project = newest_project()
@@ -535,8 +535,7 @@ def check_routing_now():
         # disabled tracks aren't checked: only those enabled at the latest export of this cue
         enabled, export = enabled_tracks(project)
         if enabled is not None:
-            skipped = [i["track"] for i in issues if i["track"] not in enabled]
-            issues = [i for i in issues if i["track"] in enabled]
+            issues, skipped = only_enabled(issues, enabled)
             log(f"[routing] enabled tracks from {export.name}; skipped (disabled or added since): {', '.join(skipped) or 'none'}")
         else:
             log("[routing] no XML export next to the project yet: disabled tracks can't be told apart")
