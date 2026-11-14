@@ -325,7 +325,29 @@ def debug(path: Path, names: list[str]):
             print(f"           after  {[x.decode() for x in after[:14]]}")
 
 
+def why(project: Path, template: Path):
+    """One line per Check Routing issue: what the project's records and the template say."""
+    b = Path(project).read_bytes()
+    every = {uid: (typ, name) for uid, typ, name in buses(b)}
+    def show(o):
+        if o is None:
+            return "none"
+        typ, name = every.get(o, (None, "?"))
+        return f"{name} (type {typ})"
+    tmpl = template_records(Path(template))
+    tr, ch = track_outputs(b), channel_outputs(b)
+    for i in project_issues(routing_records(b), tmpl):
+        n = i["track"]
+        print(f"{n} [{i['kind']}]")
+        print(f"   template: {tmpl.get(n, 'not in template')}")
+        print(f"   track records:   {[show(o) for m, o in tr if m == n][:4]}")
+        print(f"   channel records: {[show(o) for m, o in ch if m == n][:4]}")
+
+
 if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == "--why":
+        why(Path(sys.argv[2]), Path(sys.argv[3]) if len(sys.argv) > 3 else TEMPLATE_DEFAULT)
+        sys.exit()
     if len(sys.argv) >= 3 and sys.argv[1] == "--debug":
         debug(Path(sys.argv[2]), sys.argv[3:])
         sys.exit()
