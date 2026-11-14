@@ -29,14 +29,14 @@ def channel(name, out_uid):
 # Same patterns the template reader matched on Orchestral_v16 (groups 14, FX 17; an
 # instrument channel with a colliding id, type 20, must not win).
 CPR = (b"header" + bus(10962, 14, "12l_SYNTH PADS LOW DRY") + bus(10970, 14, "07b_STR HIGH LONGS DRY")
-       + bus(10962, 20, "Propheeet") + bus(10980, 17, "05a_HARP DRY") + bus(300, 1, "Stereo Out")
+       + bus(10962, 20, "Propheeet") + bus(10980, 17, "05a_HARP DRY") + bus(300, 18, "Stereo Out")
        + track("Propheeet", 10962) + track("SF AS Vlns I Legato", 10970) + track("Sketch Piano I", 300)
        + track("New Track Without Preset", 10962) + track("No Output", None)
        + track("SF AS Vlns I Legato", 10962)   # stale second record: the first one wins
        + track("SF Harp Main", 10980)
        + track("12l_SYNTH PADS LOW DRY", 10970)   # a group channel's own record: not a track
        + channel("Noise Beat", 10990) + bus(10990, 14, "12f_SYNTH PERC MID SUM")
-       + channel("Propheeet", 10970)              # the RecorderBus record already placed it: kept
+       + channel("Propheeet", 10962)              # channel record agrees with the first track record
        + bus(11000, 14, "13_BAND ALL") + bus(11010, 14, "12g_SYNTH PERC HIGH DRY")
        + channel("Ride", 11000) + channel("Ride", 11010))   # two tracks named Ride: the section group wins
 
@@ -161,6 +161,39 @@ class CheckRoutingTests(unittest.TestCase):
             finally:
                 cr.TEMPLATE_CACHE = old
             self.assertEqual({i["track"]: i["kind"] for i in first}, {"Ride": "same", "Noise Beat": "bus"})
+
+
+class RealRecordsTests(unittest.TestCase):
+    """Record shapes seen in 3m30 Still Here (2026-11-14, cpr_routing --why)."""
+    CPR3 = (b"h" + bus(1, 18, "Stereo Out") + bus(70, 17, "07b_STR HIGH LONGS DRY")
+            + bus(80, 20, "SSB 2 Cimbassi Shorts") + bus(90, 17, "12n_SYNTH LEADS DLY")
+            + bus(95, 14, "12e_SYNTH PERC LOW SUM")
+            # channel record right, second track record junk (id of nothing): routed fine
+            + track("SSS Vlns I Sus CS-Ord", 70) + track("SSS Vlns I Sus CS-Ord", 4242) + channel("SSS Vlns I Sus CS-Ord", 70)
+            # output id only matches an instrument/port (type 20): unknown, not reported
+            + track("BH Flutes-Clarinets Shorts", 80) + channel("BH Flutes-Clarinets Shorts", 80)
+            # really on Stereo Out
+            + track("Serum Pulse", 1) + track("Serum Pulse", 1) + channel("Serum Pulse", 1)
+            + track("Sketch Piano I", 1) + channel("Sketch Piano I", 1)
+            # into a delay FX channel
+            + track("Synplant Nice Pad", 90) + channel("Synplant Nice Pad", 90)
+            # channel unreadable, junk second track record into a SUM: the junk is ignored
+            + track("Iceni Swells", 4242) + track("Iceni Swells", 95) + channel("Iceni Swells", 4242))
+
+    def test_only_real_slips(self):
+        issues = cr.project_issues(cr.routing_records(self.CPR3), {})
+        self.assertEqual([(i["track"], i["kind"]) for i in issues],
+                         [("Serum Pulse", "none"), ("Synplant Nice Pad", "bus")])
+        self.assertIn("Stereo Out", cr.describe(issues[0]))
+
+    def test_export_groups_ignore_junk_records(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "3m30.cpr"
+            p.write_bytes(self.CPR3)
+            chosen, every = cr.output_routing(p)
+        self.assertEqual(chosen["SSS Vlns I Sus CS-Ord"], "07b_STR HIGH LONGS DRY")
+        self.assertEqual(every["SSS Vlns I Sus CS-Ord"], ["07b_STR HIGH LONGS DRY"])
+        self.assertNotIn("Iceni Swells", chosen)
 
 
 class PlayingTracksTests(unittest.TestCase):

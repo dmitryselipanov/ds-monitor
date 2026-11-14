@@ -116,6 +116,40 @@ def _group_rank(g: str) -> int:
     return 0
 
 
+STEREO_OUT_TYPE = 18                   # the project's main output bus (Stereo Out)
+STEREO = None                          # marker for "outputs to Stereo Out" in route lists
+
+
+def track_routes(b: bytes) -> dict[str, list]:
+    """{track name: its outputs, in order}: a group/FX channel name, or STEREO (None) for the
+    Stereo Out bus. A track's mixer-channel records are used when it has any; otherwise only its
+    first track (RecorderBus) record: later copies of that record often point at unrelated ids
+    (seen on 3m30, 2026-11-14). Outputs that are neither a group nor Stereo Out are left out."""
+    groups = group_names(b)
+    stereo = {uid for uid, typ, _ in buses(b) if typ == STEREO_OUT_TYPE}
+    def route(o):
+        if o in groups:
+            return groups[o]
+        return STEREO if o in stereo else ...
+    ch: dict[str, list] = {}
+    for name, o in channel_outputs(b):
+        ch.setdefault(name, []).append(route(o))
+    first: dict[str, object] = {}
+    for name, o in track_outputs(b):
+        first.setdefault(name, route(o))
+    out = {}
+    for name in list(ch) + [n for n in first if n not in ch]:
+        if not name or BUS_NAME.match(name):
+            continue
+        lst = []
+        for r in (ch[name] if name in ch else [first[name]]):
+            if r is not ... and r not in lst:
+                lst.append(r)
+        if lst:
+            out[name] = lst
+    return out
+
+
 def output_groups(path: Path) -> dict[str, str]:
     return output_routing(path)[0]
 
@@ -123,27 +157,19 @@ def output_groups(path: Path) -> dict[str, str]:
 def output_routing(path: Path) -> tuple[dict[str, str], dict[str, list[str]]]:
     """({track name: chosen group}, {track name: every group its records point at, in order})."""
     try:
-        b = Path(path).read_bytes()
-        groups = group_names(b)
-        result, rank, every = {}, {}, {}
-        # instrument tracks' RecorderBus records first (proven on the template), then mixer
-        # channel records, which also cover audio tracks
-        for order, (name, out) in enumerate(track_outputs(b) + channel_outputs(b)):
-            g = groups.get(out)
-            # Group and FX channels have records too ("01a_WW MELODY SUM" → "01_WW ALL"): skip them
-            if not (name and g and g[:2].isdigit() and not BUS_NAME.match(name)):
-                continue
-            # A name can have several records: stale copies, or two tracks with the same name
-            # ("Ride" → 12g_SYNTH PERC HIGH DRY and "Ride" → 13_BAND ALL). A section's own group
-            # beats a family ALL/SUM bus; otherwise the first record wins.
-            r = (_group_rank(g), order)
-            if g not in every.setdefault(name, []):
-                every[name].append(g)
-            if name not in rank or r < rank[name]:
-                result[name], rank[name] = g, r
-        return result, every
+        routes = track_routes(Path(path).read_bytes())
     except Exception:
         return {}, {}
+    result, every = {}, {}
+    for name, outs in routes.items():
+        gs = [g for g in outs if g and g[:2].isdigit()]
+        if not gs:
+            continue
+        every[name] = gs
+        # two tracks with the same name ("Ride" → 13_BAND ALL and 12g_SYNTH PERC HIGH DRY):
+        # a section's own group beats a family ALL/SUM bus; otherwise the first wins
+        result[name] = min(gs, key=lambda g: (_group_rank(g), gs.index(g)))
+    return result, every
 
 
 UTILITY_TRACK = re.compile(r"^(dx|sfx|fx|temp|temp music|dialog(ue)?|video|cue|video marker|music marker|signature|tempo)( \d+)?$", re.I)
@@ -182,29 +208,27 @@ def routing_issues(tracks: list[dict], chosen: dict[str, str], every: dict[str, 
 # ── Check Routing (menu item): a saved project compared with the template ─────────────────
 TEMPLATE_DEFAULT = Path.home() / "Library" / "Preferences" / "Cubase 15" / "Project Templates" / "Orchestral_v16 Colors.cpr"
 TEMPLATE_CACHE = Path.home() / "Library" / "Caches" / "ds-monitor" / "template-routing.json"
+STEREO_BY_DESIGN = re.compile(r"^sketch\b", re.I)      # sketch instruments go to Stereo Out on purpose
 NOT_A_TRACK = re.compile(r"^((stereo|mono) (out|in)\b|input|output)", re.I)
 
 
 def routing_records(b: bytes) -> dict[str, list]:
-    """{track name: every output it has, in order}: a group name, or None when the output isn't
-    a group or FX channel (Stereo Out, nothing). Group/FX channels' own records are skipped."""
-    groups = group_names(b)
-    out: dict[str, list] = {}
-    for name, o in track_outputs(b) + channel_outputs(b):
-        if not name or BUS_NAME.match(name) or NOT_A_TRACK.match(name):
+    """{track name: every output it has, in order}: a section group name, or None for Stereo Out.
+    Group/FX channels' own records and Cubase's input/output channels are skipped."""
+    out = {}
+    for name, outs in track_routes(b).items():
+        if NOT_A_TRACK.match(name):
             continue
-        g = groups.get(o)
-        g = g if g and g[:2].isdigit() else None
-        lst = out.setdefault(name, [])
-        if g not in lst:
-            lst.append(g)
+        lst = [g for g in outs if g is STEREO or g[:2].isdigit()]
+        if lst:
+            out[name] = lst
     return out
 
 
 def template_records(template: Path) -> dict[str, list]:
     """The template's routing, cached until the template file changes (it's ~200 MB)."""
     st = template.stat()
-    key = [str(template), st.st_size, st.st_mtime_ns]
+    key = [2, str(template), st.st_size, st.st_mtime_ns]     # 2: channel records first, real Stereo Out
     try:
         import json
         cached = json.loads(TEMPLATE_CACHE.read_text())
@@ -235,7 +259,8 @@ def project_issues(project: dict[str, list], template: dict[str, list]) -> list[
         changed = [g for g in p if g not in t]
         # a track now going to Stereo Out (or nothing) where the template's track of that name
         # went to a group: re-routed, or a copy of it routed straight out
-        lost_group = None in outs and (not known or None not in template[name])
+        lost_group = None in outs and (not known or None not in template[name]) \
+            and not STEREO_BY_DESIGN.match(name)
         if known and not changed and not lost_group:
             continue
         if len(p) > 1 and changed:
