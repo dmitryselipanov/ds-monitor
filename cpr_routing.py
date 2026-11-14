@@ -406,7 +406,49 @@ def keys(path: Path, names: list[str], before: int = 3000, after: int = 3000):
             print(f"  @{h}: " + " | ".join(pairs))
 
 
+FLAG_WORDS = re.compile(rb"disab|activ|enab|frozen|freeze|hidden|offline|bypass|state|flag|mute|on$", re.I)
+
+
+def flags(path: Path, names: list[str], span: int = 60000):
+    """Every on/off-looking setting in the file (how often, which values), then for each named
+    track the nearest one of each kind before and after its mixer channel. Compare a disabled
+    and an enabled track to find which setting means 'disabled'."""
+    b = Path(path).read_bytes()
+    found = {}
+    for m in KEY_VALUE.finditer(b):
+        k = m.group(2)
+        if len(k) + 1 != m.group(1)[0] or not FLAG_WORDS.search(k):
+            continue
+        found.setdefault(k.decode(), []).append((m.start(), b[m.end():m.end() + 8].hex()))
+    print("== on/off-looking settings: count, distinct values")
+    for k, v in sorted(found.items(), key=lambda kv: -len(kv[1])):
+        vals = {}
+        for _, x in v:
+            vals[x] = vals.get(x, 0) + 1
+        print(f"  {k}: {len(v)}  " + ", ".join(f"{x}×{n}" for x, n in sorted(vals.items(), key=lambda t: -t[1])[:4]))
+    import bisect as bs
+    for want in names:
+        raw = STRING_VALUE + bytes([len(want.encode()) + 1]) + want.encode() + b"\x00"
+        i = b.find(raw)
+        print(f"== {want} (mixer channel at {i})")
+        if i < 0:
+            continue
+        for k, v in sorted(found.items()):
+            pos = [p for p, _ in v]
+            j = bs.bisect_left(pos, i)
+            near = []
+            if j > 0 and i - pos[j - 1] < span:
+                near.append(f"before {i - pos[j - 1]}: {v[j - 1][1]}")
+            if j < len(pos) and pos[j] - i < span:
+                near.append(f"after {pos[j] - i}: {v[j][1]}")
+            if near:
+                print(f"  {k}: " + " | ".join(near))
+
+
 if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == "--flags":
+        flags(Path(sys.argv[2]), sys.argv[3:])
+        sys.exit()
     if len(sys.argv) >= 3 and sys.argv[1] == "--keys":
         keys(Path(sys.argv[2]), sys.argv[3:])
         sys.exit()
