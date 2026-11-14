@@ -428,8 +428,8 @@ def flags(path: Path, names: list[str], span: int = 60000):
         print(f"  {k}: {len(v)}  " + ", ".join(f"{x}×{n}" for x, n in sorted(vals.items(), key=lambda t: -t[1])[:4]))
     import bisect as bs
     for want in names:
-        raw = STRING_VALUE + bytes([len(want.encode()) + 1]) + want.encode() + b"\x00"
-        i = b.find(raw)
+        m = re.search(re.escape(STRING_VALUE) + rb"." + re.escape(want.encode()) + rb"\x00", b, re.S)
+        i = m.start() if m else -1
         print(f"== {want} (mixer channel at {i})")
         if i < 0:
             continue
