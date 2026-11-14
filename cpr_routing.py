@@ -285,6 +285,16 @@ def describe(issue: dict) -> str:
     return f'{issue["track"]}: outputs to Stereo Out (or nothing), not a section group.'
 
 
+def short(issue: dict) -> str:
+    """One short line for the menu and the result window."""
+    g = issue["groups"]
+    if issue["kind"] == "same":
+        return f'{issue["track"]}: same name, different groups ({", ".join(g)})'
+    if issue["kind"] == "bus":
+        return f'{issue["track"]} → {g[0]} (not a DRY group)'
+    return f'{issue["track"]} → Stereo Out (no group)'
+
+
 def find_project(xml_path: Path) -> Path | None:
     """The .cpr an XML export belongs to: same name, else the newest .cpr in its folder
     (Cubase's numbered backups "name-01.cpr" are skipped)."""

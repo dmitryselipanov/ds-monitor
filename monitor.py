@@ -498,7 +498,7 @@ def notify(title: str, subtitle: str, body: str):
         log(f"[notify] failed: {e}")
 
 
-routing_state = {"status": "", "project": "", "lines": [], "secs": 0.0, "version": 0}
+routing_state = {"status": "", "project": "", "lines": [], "secs": 0.0, "version": 0, "alert": False}
 
 
 def _routing(status, project="", lines=None, secs=0.0):
@@ -510,7 +510,7 @@ def check_routing_now():
     """Menu item: compare the last saved project's routing with the template and report slips in
     tracks added or re-routed since. Save in Cubase (Cmd+S) first: it reads the file on disk.
     The result shows in the menu (and as a notification, when macOS allows them)."""
-    from cpr_routing import routing_records, template_records, project_issues, describe
+    from cpr_routing import routing_records, template_records, project_issues, describe, short
     t0 = time.time()
     _routing("checking")
     project = newest_project()
@@ -540,10 +540,9 @@ def check_routing_now():
     secs = time.time() - t0
     log(f"[routing] {project.stem}: {len(proj)} tracks, {len(issues)} issue(s) in {secs:.1f}s "
         f"(find {t_find:.1f}s, template {t_tmpl:.1f}s, read {len(data) / 1e6:.0f} MB {t_read:.1f}s, parse {t_parse:.1f}s)")
-    lines = [describe(i) for i in issues]
-    for l in lines:
-        log(f"[routing] {project.stem}: {l}")
-    _routing("issues" if issues else "ok", project.stem, lines, secs)
+    for i in issues:
+        log(f"[routing] {project.stem}: {describe(i)}")
+    _routing("issues" if issues else "ok", project.stem, [short(i) for i in issues], secs)
     if issues:
         names = ", ".join(i["track"] for i in issues[:4]) + (" …" if len(issues) > 4 else "")
         notify("DS Monitor", f"{project.stem}: {len(issues)} routing issue{'s' if len(issues) != 1 else ''}", names)
@@ -1492,8 +1491,22 @@ class DSMonitorApp(rumps.App):
         if routing_state["status"] == "checking":
             return
         _routing("checking")
+        routing_state["alert"] = True          # show the result in a window when it's done
         self.update_menu()
         threading.Thread(target=check_routing_now, daemon=True).start()
+
+    def show_routing_result(self):
+        """An open menu doesn't redraw, so the result also pops up in a small window."""
+        r = routing_state
+        routing_state["alert"] = False
+        if r["status"] == "ok":
+            rumps.alert(f"{r['project']}: routing OK", "No issues in tracks added or changed since the template.")
+        elif r["status"] == "issues":
+            n = len(r["lines"])
+            more = f"\n… and {n - 15} more (see the menu)" if n > 15 else ""
+            rumps.alert(f"{r['project']}: {n} routing issue{'s' if n != 1 else ''}", "\n".join(r["lines"][:15]) + more)
+        elif r["status"] == "error":
+            rumps.alert("Check Routing", "\n".join(r["lines"]))
 
     def routing_items(self):
         """Check Routing, then its last result: OK, or each issue as its own line."""
@@ -1509,7 +1522,7 @@ class DSMonitorApp(rumps.App):
         elif r["status"] == "issues":
             n = len(r["lines"])
             out.append(rumps.MenuItem(f"⚠ {n} routing issue{'s' if n != 1 else ''}: {r['project']}{when}", callback=None))
-            out.extend(rumps.MenuItem("    " + l[:90], callback=None) for l in r["lines"][:12])
+            out.extend(rumps.MenuItem("    " + l[:70], callback=None) for l in r["lines"][:12])
             if n > 12:
                 out.append(rumps.MenuItem(f"    … {n - 12} more in the log", callback=None))
         elif r["status"] == "error":
@@ -1577,6 +1590,8 @@ class DSMonitorApp(rumps.App):
             self._last_status = state["status"]
             self._routing_version = routing_state["version"]
             self.update_menu()
+            if routing_state["alert"] and routing_state["status"] in ("ok", "issues", "error"):
+                self.show_routing_result()
 
 
 def run_menubar():
