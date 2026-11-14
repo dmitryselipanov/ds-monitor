@@ -554,7 +554,7 @@ def check_routing_now():
     if enabled is None:
         routing_state["note"] = "No XML export next to this project yet, so disabled tracks are included."
     elif skipped:
-        routing_state["note"] = (f"Skipped (not enabled in {export.name}): " + ", ".join(skipped[:8])
+        routing_state["note"] = (f"Skipped as disabled or hidden copies (per {export.name}): " + ", ".join(skipped[:8])
                                  + (" …" if len(skipped) > 8 else ""))
     else:
         routing_state["note"] = ""
