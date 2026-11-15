@@ -126,14 +126,21 @@ class CheckRoutingTests(unittest.TestCase):
             "Noise Beat": ["12f_SYNTH PERC MID SUM"],              # new, into a SUM
             "New Synth": [None],                                    # new, no group
             "SF Harp Main": ["05a_HARP RVB"],                       # re-routed into a reverb sum
-            "Gtr": ["13_BAND ALL"],                                 # new and fine
+            "Gtr": ["13_BAND ALL"],                                 # new, straight into the family bus
+            "Gtr Dist": ["13c_GTR EL DRY"],                         # new and fine
+            "Sketch Piano V": ["06_PIANO ALL"],                     # sketch instruments: by design
             "Dx": [None],                                           # utility
             "Propheeet": ["12l_SYNTH PADS LOW DRY", None],          # a copy routed straight to Stereo Out
         })
         issues = cr.project_issues(project, self.TEMPLATE)
         self.assertEqual([(i["track"], i["kind"]) for i in issues],
-                         [("New Synth", "none"), ("Noise Beat", "bus"), ("Propheeet", "none"),
+                         [("Gtr", "family"), ("New Synth", "none"), ("Noise Beat", "bus"), ("Propheeet", "none"),
                           ("Ride", "same"), ("SF Harp Main", "bus")])
+
+    def test_family_bus_wording(self):
+        i = {"track": "Gtr", "kind": "family", "groups": ["13_BAND ALL"]}
+        self.assertEqual(cr.short(i), "Gtr → 13_BAND ALL (family bus, not a DRY group)")
+        self.assertIn("13_BAND ALL", cr.describe(i))
 
     def test_template_track_rerouted_to_stereo_out(self):
         project = dict(self.TEMPLATE, **{"SF Harp Main": [None]})

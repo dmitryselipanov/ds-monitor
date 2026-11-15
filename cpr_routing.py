@@ -248,7 +248,9 @@ def template_records(template: Path) -> dict[str, list]:
 
 def project_issues(project: dict[str, list], template: dict[str, list]) -> list[dict]:
     """Routing slips in tracks added or re-routed since the template (the template itself was
-    audited, so its own routing isn't reported again)."""
+    audited, so its own routing isn't reported again). Kinds: same (one name, several groups),
+    bus (into a SUM/RVB/FX), family (straight into a family ALL/COMBINED bus or 00_2MIX, skipping
+    the section's DRY group: the old band-bus habit), none (Stereo Out or nothing)."""
     issues = []
     for name, outs in sorted(project.items(), key=lambda kv: kv[0].lower()):
         if UTILITY_TRACK.match(name.strip()):
@@ -267,6 +269,8 @@ def project_issues(project: dict[str, list], template: dict[str, list]) -> list[
             issues.append({"track": name, "kind": "same", "groups": p})
         elif any(_group_rank(g) == 1 for g in (changed if known else p)):
             issues.append({"track": name, "kind": "bus", "groups": [g for g in p if _group_rank(g) == 1][:1]})
+        elif any(_group_rank(g) == 2 for g in (changed if known else p)) and not STEREO_BY_DESIGN.match(name):
+            issues.append({"track": name, "kind": "family", "groups": [g for g in (changed if known else p) if _group_rank(g) == 2][:1]})
         elif lost_group:
             # "also": groups other records of this name go to (a disabled or hidden copy may be the
             # one on Stereo Out; only_enabled() decides with the export's track count)
@@ -284,6 +288,8 @@ def describe(issue: dict) -> str:
         return f'{issue["track"]}: tracks with this name go to different groups ({", ".join(g)}). Rename one or fix its output.'
     if issue["kind"] == "bus":
         return f'{issue["track"]}: outputs into {g[0]}, not a section group. Usually it should go to that section\'s DRY group.'
+    if issue["kind"] == "family":
+        return f'{issue["track"]}: outputs straight into {g[0]}, skipping a section. Route it to its section\'s DRY group (band: 13a KIT … 13g VOX BGV).'
     return f'{issue["track"]}: outputs to Stereo Out (or nothing), not a section group.'
 
 
@@ -331,6 +337,8 @@ def short(issue: dict) -> str:
         return f'{issue["track"]}: same name, different groups ({", ".join(g)})'
     if issue["kind"] == "bus":
         return f'{issue["track"]} → {g[0]} (not a DRY group)'
+    if issue["kind"] == "family":
+        return f'{issue["track"]} → {g[0]} (family bus, not a DRY group)'
     return f'{issue["track"]} → Stereo Out (no group)'
 
 
