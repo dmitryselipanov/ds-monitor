@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bwf_check import (SILENT_DBFS, check_stamp, evaluate_mixdown, normalize_rate, parse_wav, peak_dbfs)
+from bwf_check import (SILENT_DBFS, check_stamp, evaluate_mixdown, ixml_timecode, normalize_rate, parse_wav,
+                       peak_dbfs)
 from wav_check import wav_file_problem, wav_header_problem
 
 TONE_24 = (struct.pack("<i", 4_000_000)[:3] + struct.pack("<i", -4_000_000)[:3]) * 480   # about -6 dBFS
@@ -132,9 +133,51 @@ class StampTests(unittest.TestCase):
         self.assertEqual(self.stamp("1m01 A 01.00.00.00.wav", 3600 * 25 * 1920, rate="25").status, "PASS")
         self.assertEqual(self.stamp("1m01 A 01.00.00.00.wav", 3600 * 48000, rate="24").status, "PASS")
 
-    def test_ixml_rate_mismatch_is_noted(self):
-        result = self.stamp("1m01 A 01.00.00.00.wav", 3600 * 25 * 1920, rate="25")
-        self.assertIn("iXML says 23.976 fps", result.detail)
+
+
+def ixml_for(rate: bytes, flag: bytes = b"NDF") -> bytes:
+    return (b"<BWFXML><SPEED><MASTER_SPEED>" + rate + b"</MASTER_SPEED><TIMECODE_RATE>" + rate +
+            b"</TIMECODE_RATE><TIMECODE_FLAG>" + flag + b"</TIMECODE_FLAG></SPEED></BWFXML>")
+
+
+class FrameRateSourceTests(unittest.TestCase):
+    """The export's iXML says which rate Cubase used; DS Scoring is only the fallback."""
+    H1_25 = 3600 * 25 * 1920   # 01:00:00:00 at 48 kHz / 25 fps
+
+    def test_ixml_rate_wins_with_no_setting_anywhere(self):
+        v = evaluate_mixdown("1m01 A 01.00.00.00.wav", bwf_wav(self.H1_25, ixml=ixml_for(b"25/1")))
+        self.assertEqual((v.stamp.status, v.rate, v.rate_source), ("PASS", "25", "iXML"))
+        self.assertIn("| 25 fps (iXML)", v.stamp.detail)
+        self.assertIsNone(v.alert)
+
+    def test_ixml_rate_wins_over_ds_scoring_and_the_mismatch_is_flagged(self):
+        v = evaluate_mixdown("1m01 A 01.00.00.00.wav", bwf_wav(self.H1_25, ixml=ixml_for(b"25")), rate="24")
+        self.assertEqual((v.stamp.status, v.rate), ("PASS", "25"))
+        self.assertTrue(v.publish)
+        self.assertEqual(v.alert, "1m01 A: Cubase project is 25 fps but DS Scoring says 24")
+
+    def test_no_ixml_uses_ds_scoring_then_23_976(self):
+        v = evaluate_mixdown("1m01 A 01.00.00.00.wav", bwf_wav(self.H1_25, ixml=None), rate="25")
+        self.assertEqual((v.stamp.status, v.rate_source), ("PASS", "DS Scoring"))
+        v = evaluate_mixdown("1m01 A 01.00.00.00.wav", bwf_wav(172_972_800, ixml=None))
+        self.assertEqual((v.stamp.status, v.rate, v.rate_source), ("PASS", "23.976", "default"))
+
+    def test_cubase_style_ixml_reads_as_23_976(self):
+        self.assertEqual(ixml_timecode(IXML.decode()), ("23.976", "24000/1001", False))
+
+    def test_drop_frame_warns_and_never_blocks(self):
+        v = evaluate_mixdown("1m01 A 01.00.00.00.wav", bwf_wav(0, ixml=ixml_for(b"30000/1001", b"DF")), mode="block")
+        self.assertEqual(v.stamp.status, "WARN")
+        self.assertIn("drop-frame", v.stamp.detail)
+        self.assertTrue(v.publish)
+
+    def test_unsupported_ixml_rate_falls_back_with_a_warning(self):
+        v = evaluate_mixdown("1m01 A 01.00.00.00.wav", bwf_wav(172_972_800, ixml=ixml_for(b"60000/1001")))
+        self.assertEqual((v.stamp.status, v.rate_source), ("PASS", "default"))
+        self.assertIn("iXML frame rate 60000/1001 isn't supported", v.alert)
+
+
+class FrameRateNameTests(unittest.TestCase):
 
     def test_frame_rate_names(self):
         for raw in ["23.976", "23.98", "24000/1001", 23.976, " 23.976 fps"]:

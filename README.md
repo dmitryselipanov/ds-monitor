@@ -107,10 +107,17 @@ the DS Scoring bot (through the Worker's `/monitor-notify`, with
   and a corrected re-export publishes normally
 - `"off"`: no check
 
-A silent mix or a missing timecode never blocks. The frame rate comes from
-DS Scoring (`frame_rate` in `/monitor-cues`) when the Worker sends it, else
-23.976 with a log line. Check files by hand:
-`python3 bwf_check.py "/path/to/Mixdown" [--fps 25]`.
+A silent mix or a missing timecode never blocks.
+
+The frame rate is automatic: Cubase writes the project's rate into each
+export's iXML chunk (keep **Insert iXML Chunk** on), so the check uses the
+rate of the project the file came from. Exports without iXML fall back to the
+project's frame rate in DS Scoring (via `/monitor-cues`), then 23.976 with a
+log line. If the iXML and DS Scoring disagree, the mix still publishes and the
+alert says so ("Cubase project is 25 fps but DS Scoring says 24"), since one of
+them is set wrong. Drop-frame timecode is a WARN (only non-drop is checked).
+Check files by hand: `python3 bwf_check.py "/path/to/Mixdown"` (`--fps 25`
+sets the fallback for files without iXML).
 
 ## Cubase XML exports: slimmed automatically
 
