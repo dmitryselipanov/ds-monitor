@@ -64,7 +64,7 @@ FAMILIES = {"01": "Woodwinds", "02": "Brass", "03": "Orchestral Percussion", "04
             "05": "Harp", "06": "Piano", "07": "Strings", "08": "Choir", "09": "Orchestra",
             "10": "Orchestra", "11": "Orchestra", "12": "Synths & Design", "13": "Band",
             "14": "Ethnic & Misc", "15": "Sampling & Ext"}
-UTILITY = {"dx", "sfx", "temp", "video", "cue"}
+UTILITY = {"dx", "sfx", "temp", "video", "cue", "video marker", "music marker", "signature", "tempo"}
 
 
 def family(group: str) -> str | None:
@@ -85,11 +85,10 @@ def summarize(tracks: list[dict]) -> list[dict]:
         counted = live or parts
         name = t.get("name") or "(unnamed)"
         g = t.get("g") or ""
-        if name.strip().lower() in UTILITY:
-            f = "Utility"
-        else:
-            f = family(g) or fam or "Other"     # ungrouped tracks (audio takes) stay in the section above
-            fam = f
+        if name.strip().lower() in UTILITY:   # template utility rows (Dx, Sfx, Temp …): never imported
+            continue
+        f = family(g) or fam or "Other"         # ungrouped tracks (audio takes) stay in the section above
+        fam = f
         audio = sum(1 for p in counted if p.get("a"))
         rows.append({
             "name": name, "group": g, "family": f,

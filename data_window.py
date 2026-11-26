@@ -9,7 +9,7 @@ from pathlib import Path
 
 import AppKit
 import objc
-from AppKit import (NSApp, NSButton, NSColor, NSFont, NSMakeRect, NSOpenPanel, NSPanel,
+from AppKit import (NSApp, NSButton, NSColor, NSFont, NSMakeRect, NSOpenPanel, NSPanel, NSScreen,
                     NSPasteboard, NSScrollView, NSTextField, NSView, NSVisualEffectView)
 from Foundation import NSObject, NSURL
 
@@ -52,7 +52,6 @@ ROW = 24            # track row height
 HEAD_GAP = 16       # space above a section heading
 HEADING = 20        # section heading height
 TOP = 92            # title area (below the window's traffic lights)
-MAX_HEIGHT = 820
 
 _open = []          # panels and their controllers: kept here so they aren't garbage-collected
 
@@ -133,8 +132,8 @@ def _layout(rep) -> list[tuple]:
     return items
 
 
-def _list_view(items, w):
-    """The scrolling list: section headings and track rows, laid out top to bottom."""
+def _place(items):
+    """(item, y) for each item, and the list's total height."""
     y, placed = 4, []
     for it in items:
         if it[0] == "heading":
@@ -144,7 +143,13 @@ def _list_view(items, w):
         else:
             placed.append((it, y))
             y += ROW
-    doc = _Flipped.alloc().initWithFrame_(NSMakeRect(0, 0, w, y + 16))
+    return placed, y + 16
+
+
+def _list_view(items, w):
+    """The scrolling list: section headings and track rows, laid out top to bottom."""
+    placed, list_h = _place(items)
+    doc = _Flipped.alloc().initWithFrame_(NSMakeRect(0, 0, w, list_h))
     doc.setAutoresizingMask_(NSViewWidthSizable)
     secondary, tertiary = NSColor.secondaryLabelColor(), NSColor.tertiaryLabelColor()
     for it, y in placed:
@@ -188,8 +193,10 @@ def show(path: Path, activate: bool = True):
     activate=False (opened by itself next to Cubase's import dialog): don't take the focus."""
     rep = report(path)
     items = _layout(rep)
-    list_h = sum(ROW if i[0] == "row" else HEADING + HEAD_GAP for i in items) + 24
-    height = min(TOP + max(list_h, 40), MAX_HEIGHT)
+    note_h = (16 * sum(1 + len(l) // 66 for l in rep["note"].split("\n")) + 2) if rep["note"] else 0
+    head_h = TOP + (note_h + 4 if note_h else 0)
+    needed = head_h + max(_place(items)[1], 40)
+    height = needed
     style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
              | NSWindowStyleMaskFullSizeContentView)
     panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
@@ -241,8 +248,6 @@ def show(path: Path, activate: bool = True):
 
     top = TOP
     if rep["note"]:
-        lines = sum(1 + len(l) // 66 for l in rep["note"].split("\n"))     # ~66 characters a line
-        note_h = 16 * lines + 2
         color = NSColor.systemOrangeColor() if rep["stale"] else NSColor.secondaryLabelColor()
         note = _text(rep["note"], NSMakeRect(PAD, h - top - note_h + 6, w - 2 * PAD, note_h),
                      size=11, color=color, wrap=True)
@@ -258,6 +263,17 @@ def show(path: Path, activate: bool = True):
     scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
     scroll.setDocumentView_(_list_view(items, w))
     bg.addSubview_(scroll)
+
+    # tall enough for the whole list (up to the screen's height), keeping the remembered
+    # position's top edge and width; moved up if the list wouldn't fit below it
+    screen = panel.screen() or NSScreen.mainScreen()
+    if screen is not None:
+        vis, f = screen.visibleFrame(), panel.frame()
+        title_bar = f.size.height - panel.contentRectForFrameRect_(f).size.height
+        hgt = min(needed + title_bar, vis.size.height)
+        top = min(f.origin.y + f.size.height, vis.origin.y + vis.size.height)
+        y = max(vis.origin.y, top - hgt)
+        panel.setFrame_display_(NSMakeRect(f.origin.x, y, f.size.width, hgt), True)
 
     _open.append((panel, ctl))
     if activate:

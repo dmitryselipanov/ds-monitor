@@ -57,7 +57,7 @@ class SummarizeTests(unittest.TestCase):
         got = [(title, [r["name"] for r in rows]) for title, rows in sections(summarize(t))]
         self.assertEqual(got, [("Woodwinds", ["PRIM Flute"]),
                                ("Brass", ["SSB 2 Horns Longs", "Euphonium pad 1 Take 1"]),
-                               ("Utility", ["Dx"]), ("Synths & Design", ["Prophet Bass"])])
+                               ("Synths & Design", ["Prophet Bass"])])      # Dx left out
 
     def test_detail(self):
         vln, zeb1, aud, zeb2 = summarize(TRACKS)
