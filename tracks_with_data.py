@@ -59,23 +59,43 @@ def read_tracks(xml_path: Path) -> list[dict]:
     return json.loads(m.group(1).replace("]]]]><![CDATA[>", "]]>"))
 
 
+# Template families, by the number their section groups start with (01a_WW MELODY DRY → 01).
+FAMILIES = {"01": "Woodwinds", "02": "Brass", "03": "Orchestral Percussion", "04": "Ethnic Percussion",
+            "05": "Harp", "06": "Piano", "07": "Strings", "08": "Choir", "09": "Orchestra",
+            "10": "Orchestra", "11": "Orchestra", "12": "Synths & Design", "13": "Band",
+            "14": "Ethnic & Misc", "15": "Sampling & Ext"}
+UTILITY = {"dx", "sfx", "temp", "video", "cue"}
+
+
+def family(group: str) -> str | None:
+    m = re.match(r"(\d\d)", group or "")
+    return FAMILIES.get(m.group(1)) if m else None
+
+
 def summarize(tracks: list[dict]) -> list[dict]:
     """One row per track that holds at least one part or audio region, in order:
-    {n: position among them (1-based), name, group, audio, parts, notes, muted (all parts muted)}."""
-    rows = []
+    {name, group, family, midi, audio, notes, muted (every part muted), same_name}.
+    For a track with some unmuted parts, only those are counted."""
+    rows, fam = [], None
     for t in tracks:
         parts = t.get("parts") or []
         if not parts:
             continue
-        audio = sum(1 for p in parts if p.get("a"))
+        live = [p for p in parts if not (p.get("m") or 0) & MUTED]
+        counted = live or parts
+        name = t.get("name") or "(unnamed)"
+        g = t.get("g") or ""
+        if name.strip().lower() in UTILITY:
+            f = "Utility"
+        else:
+            f = family(g) or fam or "Other"     # ungrouped tracks (audio takes) stay in the section above
+            fam = f
+        audio = sum(1 for p in counted if p.get("a"))
         rows.append({
-            "n": len(rows) + 1,
-            "name": t.get("name") or "(unnamed)",
-            "group": t.get("g") or "",
-            "audio": audio,
-            "midi": len(parts) - audio,
-            "notes": sum(len(p.get("n") or []) for p in parts),
-            "muted": all((p.get("m") or 0) & MUTED for p in parts),
+            "name": name, "group": g, "family": f,
+            "audio": audio, "midi": len(counted) - audio,
+            "notes": sum(len(p.get("n") or []) for p in counted if not p.get("a")),
+            "muted": not live,
         })
     dup = {}
     for r in rows:
@@ -85,33 +105,43 @@ def summarize(tracks: list[dict]) -> list[dict]:
     return rows
 
 
-def label(r: dict) -> str:
-    """One line for the window: name, then what it holds and where it goes."""
+def sections(rows: list[dict]) -> list[tuple[str, list[dict]]]:
+    """Rows grouped under a heading each time the family changes, keeping track-list order."""
+    out = []
+    for r in rows:
+        if not out or out[-1][0] != r["family"]:
+            out.append((r["family"], []))
+        out[-1][1].append(r)
+    return out
+
+
+def detail(r: dict) -> str:
+    """What a track holds, short: "38 notes", "10 audio regions", "1 empty part"."""
     what = []
     if r["midi"]:
-        what.append(f"{r['midi']} MIDI part{'s' if r['midi'] != 1 else ''}, {r['notes']} note{'s' if r['notes'] != 1 else ''}")
+        what.append(f"{r['notes']} note{'s' if r['notes'] != 1 else ''}" if r["notes"]
+                    else f"{r['midi']} empty part{'s' if r['midi'] != 1 else ''}")
     if r["audio"]:
         what.append(f"{r['audio']} audio region{'s' if r['audio'] != 1 else ''}")
-    s = f"{r['name']}   ·  {', '.join(what)}"
-    if r["group"]:
-        s += f"  →  {r['group']}"
-    if r["muted"]:
-        s += "   (all muted)"
-    return s
+    return " + ".join(what)
 
 
 def report(path: Path) -> dict:
     """Everything the window shows for the picked .cpr or .xml:
-    {project, export (Path | None), rows, total (tracks in the export), stale (bool), note}."""
+    {project, export (Path | None), rows (playing), muted (every part muted), total (tracks in
+    the export), stale (bool), note}."""
     path = Path(path)
     export = export_for(path)
-    out = {"project": path.stem, "export": export, "rows": [], "total": 0, "stale": False, "note": ""}
+    out = {"project": path.stem, "export": export, "rows": [], "muted": [], "total": 0,
+           "stale": False, "note": ""}
     if export is None:
         out["note"] = ("No XML export next to this project yet. In that cue: select all tracks → "
                        "File › Export › Selected Tracks, saved next to the .cpr with its name.")
         return out
     tracks = read_tracks(export)
-    out["rows"] = summarize(tracks)
+    rows = summarize(tracks)
+    out["rows"] = [r for r in rows if not r["muted"]]
+    out["muted"] = [r for r in rows if r["muted"]]
     out["total"] = len(tracks)
     notes = []
     if not tracks:
@@ -123,24 +153,25 @@ def report(path: Path) -> dict:
         try:
             if path.stat().st_mtime > export.stat().st_mtime + 60:
                 out["stale"] = True
-                notes.append("The project was saved after this export: export again for an up-to-date list.")
+                notes.append("Saved after this export: export again for an up-to-date list.")
         except OSError:
             pass
     dups = sorted({r["name"] for r in out["rows"] if r["same_name"] > 1})
     if dups:
-        notes.append("Same name more than once (tell apart by group/order): " + ", ".join(dups[:6])
-                     + (" …" if len(dups) > 6 else ""))
+        notes.append("More than one track named " + ", ".join(dups[:6]) + (" …" if len(dups) > 6 else ""))
     out["note"] = "\n".join(notes)
     return out
 
 
 def as_text(rep: dict) -> str:
     """Plain-text version (for Copy and the command line)."""
-    lines = [f"{rep['project']}: {len(rep['rows'])} tracks with data"
-             + (f" (of {rep['total']} enabled at export)" if rep["export"] else "")]
+    lines = [f"{rep['project']}: {len(rep['rows'])} tracks with data"]
     if rep["note"]:
         lines.append(rep["note"])
-    lines += [f"{r['n']:>3}. {label(r)}" for r in rep["rows"]]
+    for title, rows in sections(rep["rows"]):
+        lines += ["", title.upper()] + [f"  {r['name']}  ({detail(r)})" for r in rows]
+    if rep["muted"]:
+        lines += ["", "MUTED"] + [f"  {r['name']}  ({detail(r)})" for r in rep["muted"]]
     return "\n".join(lines)
 
 

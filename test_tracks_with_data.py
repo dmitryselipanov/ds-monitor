@@ -5,7 +5,7 @@ import time
 import unittest
 from pathlib import Path
 
-from tracks_with_data import as_text, export_for, label, report, summarize
+from tracks_with_data import as_text, detail, export_for, report, sections, summarize
 from xml_slim import slim
 
 TRACKS = [
@@ -32,7 +32,6 @@ class SummarizeTests(unittest.TestCase):
     def test_only_tracks_with_parts_in_order(self):
         rows = summarize(TRACKS)
         self.assertEqual([r["name"] for r in rows], ["SSS Vlns I Legato", "Zebra", "Stereo In 1-2", "Zebra"])
-        self.assertEqual([r["n"] for r in rows], [1, 2, 3, 4])
 
     def test_counts_and_flags(self):
         vln, zeb1, aud, zeb2 = summarize(TRACKS)
@@ -42,11 +41,29 @@ class SummarizeTests(unittest.TestCase):
         self.assertEqual(zeb1["same_name"], 2)
         self.assertEqual(vln["same_name"], 1)
 
-    def test_label(self):
-        vln, zeb1, aud, _ = summarize(TRACKS)
-        self.assertEqual(label(vln), "SSS Vlns I Legato   ·  1 MIDI part, 2 notes  →  07a_STR MELODY DRY")
-        self.assertIn("(all muted)", label(zeb1))
-        self.assertIn("2 audio regions", label(aud))
+    def test_partly_muted_counts_only_unmuted_parts(self):
+        t = [{"cls": "Instrument", "name": "Harp", "g": "05a_HARP DRY", "parts": [
+            {"s": 0, "l": 1, "o": 0, "m": 2, "n": [[0, 1, 60, 0]] * 5},
+            {"s": 1, "l": 1, "o": 0, "m": 0, "n": [[0, 1, 60, 0]] * 3}]}]
+        (r,) = summarize(t)
+        self.assertEqual((r["muted"], r["midi"], r["notes"]), (False, 1, 3))
+
+    def test_families_and_sections(self):
+        t = [{"name": "PRIM Flute", "g": "01b_WW HIGH LONGS DRY", "parts": [{"m": 0, "n": [[0, 1, 1, 0]]}]},
+             {"name": "SSB 2 Horns Longs", "g": "02c_BRS MID LONGS DRY", "parts": [{"m": 0, "n": []}]},
+             {"name": "Euphonium pad 1 Take 1", "parts": [{"m": 0, "a": 1, "n": []}]},
+             {"name": "Dx", "parts": [{"m": 0, "a": 1, "n": []}]},
+             {"name": "Prophet Bass", "g": "12k_SYNTH BASS DRY", "parts": [{"m": 0, "n": [[0, 1, 1, 0]]}]}]
+        got = [(title, [r["name"] for r in rows]) for title, rows in sections(summarize(t))]
+        self.assertEqual(got, [("Woodwinds", ["PRIM Flute"]),
+                               ("Brass", ["SSB 2 Horns Longs", "Euphonium pad 1 Take 1"]),
+                               ("Utility", ["Dx"]), ("Synths & Design", ["Prophet Bass"])])
+
+    def test_detail(self):
+        vln, zeb1, aud, zeb2 = summarize(TRACKS)
+        self.assertEqual(detail(vln), "2 notes")
+        self.assertEqual(detail(aud), "2 audio regions")
+        self.assertEqual(detail(zeb2), "1 empty part")
 
 
 class ReportTests(unittest.TestCase):
@@ -67,10 +84,14 @@ class ReportTests(unittest.TestCase):
         os.utime(cpr, (old, old))
         rep = report(cpr)
         self.assertEqual(rep["export"].name, "2m29 The Gift V2.xml")
-        self.assertEqual(len(rep["rows"]), 4)
+        self.assertEqual([r["name"] for r in rep["rows"]], ["SSS Vlns I Legato", "Stereo In 1-2", "Zebra"])
+        self.assertEqual([r["name"] for r in rep["muted"]], ["Zebra"])
         self.assertEqual(rep["total"], 5)
+        text = as_text(rep)
+        self.assertIn("STRINGS", text)
+        self.assertTrue(text.rstrip().endswith("Zebra  (1 note)"))
         self.assertFalse(rep["stale"])
-        self.assertIn("Zebra", rep["note"])
+        self.assertIn("More than one track named Zebra", rep["note"])
 
     def test_falls_back_to_newest_slim_and_says_so(self):
         cpr = self.dir / "1m02 City Pulse V3.cpr"
@@ -89,7 +110,7 @@ class ReportTests(unittest.TestCase):
         os.utime(self.dir / "a.xml", (old, old))
         rep = report(cpr)
         self.assertTrue(rep["stale"])
-        self.assertIn("saved after this export", rep["note"])
+        self.assertIn("Saved after this export", rep["note"])
 
     def test_no_export(self):
         cpr = self.dir / "a.cpr"
@@ -123,7 +144,7 @@ class ReportTests(unittest.TestCase):
         x = self.dir / "a.xml"
         write_slim(x)
         self.assertEqual(export_for(x), x)
-        self.assertEqual(len(report(x)["rows"]), 4)
+        self.assertEqual(len(report(x)["rows"]), 3)
 
     def test_reads_what_xml_slim_writes(self):
         full = self.dir / "full.xml"

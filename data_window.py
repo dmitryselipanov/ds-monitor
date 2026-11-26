@@ -1,6 +1,6 @@
-"""The "Tracks with Data" window: a small panel that floats above Cubase and lists the tracks
-of a cue that hold MIDI or audio, each with a tick box to tick off while selecting tracks in
-Cubase's Import Tracks from Project dialog. Main thread only (it's called from a menu item).
+"""The "Tracks with Data" window: a translucent panel that floats above Cubase and lists the
+tracks of a cue that play (MIDI or audio), under template-section headings in track-list
+order, with fully muted tracks in their own list at the end. Main thread only.
 
 Uses AppKit through PyObjC, which rumps already brings in.
 """
@@ -10,8 +10,10 @@ from pathlib import Path
 import AppKit
 import objc
 from AppKit import (NSApp, NSButton, NSColor, NSFont, NSMakeRect, NSOpenPanel, NSPanel,
-                    NSPasteboard, NSScrollView, NSTextField, NSView)
+                    NSPasteboard, NSScrollView, NSTextField, NSView, NSVisualEffectView)
 from Foundation import NSObject, NSURL
+
+from tracks_with_data import as_text, detail, report, sections
 
 
 def _const(name, value):
@@ -27,18 +29,30 @@ NSViewMinXMargin = _const("NSViewMinXMargin", 1)
 NSViewWidthSizable = _const("NSViewWidthSizable", 2)
 NSViewMinYMargin = _const("NSViewMinYMargin", 8)
 NSViewHeightSizable = _const("NSViewHeightSizable", 16)
+NSTextAlignmentRight = _const("NSTextAlignmentRight", 2)
+NSLineBreakByTruncatingTail = _const("NSLineBreakByTruncatingTail", 4)
+NSControlSizeSmall = _const("NSControlSizeSmall", 1)
 NSWindowCollectionBehaviorCanJoinAllSpaces = _const("NSWindowCollectionBehaviorCanJoinAllSpaces", 1)
 NSWindowCollectionBehaviorFullScreenAuxiliary = _const("NSWindowCollectionBehaviorFullScreenAuxiliary", 256)
 NSWindowStyleMaskTitled = _const("NSWindowStyleMaskTitled", 1)
 NSWindowStyleMaskClosable = _const("NSWindowStyleMaskClosable", 2)
 NSWindowStyleMaskResizable = _const("NSWindowStyleMaskResizable", 8)
-NSWindowStyleMaskUtilityWindow = _const("NSWindowStyleMaskUtilityWindow", 16)
+NSWindowStyleMaskFullSizeContentView = _const("NSWindowStyleMaskFullSizeContentView", 1 << 15)
+NSWindowTitleHidden = _const("NSWindowTitleHidden", 1)
+NSVisualEffectMaterialHUDWindow = _const("NSVisualEffectMaterialHUDWindow", 13)
+NSVisualEffectBlendingModeBehindWindow = _const("NSVisualEffectBlendingModeBehindWindow", 0)
+NSVisualEffectStateActive = _const("NSVisualEffectStateActive", 1)
+NSFontWeightMedium = _const("NSFontWeightMedium", 0.23)
+NSFontWeightSemibold = _const("NSFontWeightSemibold", 0.3)
+NSFontWeightBold = _const("NSFontWeightBold", 0.4)
 
-from tracks_with_data import as_text, label, report
-
-ROW = 22
-HEADER = 64
-WIDTH = 560
+WIDTH = 440
+PAD = 20            # left/right margin
+ROW = 24            # track row height
+HEAD_GAP = 16       # space above a section heading
+HEADING = 20        # section heading height
+TOP = 92            # title area (below the window's traffic lights)
+MAX_HEIGHT = 820
 
 _open = []          # panels and their controllers: kept here so they aren't garbage-collected
 
@@ -60,6 +74,7 @@ class _Controller(NSObject):
         pb = NSPasteboard.generalPasteboard()
         pb.clearContents()
         pb.setString_forType_(self.text, NSPasteboardTypeString)
+        sender.setTitle_("Copied")
 
     def windowWillClose_(self, note):
         for i, (panel, ctl) in enumerate(_open):
@@ -86,71 +101,156 @@ def choose_project(start_dir: Path | None) -> Path | None:
     return Path(url.path()) if url else None
 
 
-def _label(text, frame, bold=False, size=12):
+def _text(text, frame, size=13, weight=None, color=None, right=False, wrap=False):
     f = NSTextField.alloc().initWithFrame_(frame)
     f.setStringValue_(text)
     f.setBezeled_(False)
     f.setDrawsBackground_(False)
     f.setEditable_(False)
-    f.setSelectable_(True)
-    f.setFont_(NSFont.boldSystemFontOfSize_(size) if bold else NSFont.systemFontOfSize_(size))
+    f.setSelectable_(False)
+    if weight is None:
+        f.setFont_(NSFont.systemFontOfSize_(size))
+    else:
+        f.setFont_(NSFont.systemFontOfSize_weight_(size, weight))
+    f.setTextColor_(color or NSColor.labelColor())
+    if right:
+        f.setAlignment_(NSTextAlignmentRight)
+    if not wrap:
+        f.cell().setLineBreakMode_(NSLineBreakByTruncatingTail)
+        f.cell().setUsesSingleLineMode_(True)
     return f
 
 
+def _layout(rep) -> list[tuple]:
+    """("heading", title, count) / ("row", row, muted) items in display order."""
+    items = []
+    for title, rows in sections(rep["rows"]):
+        items.append(("heading", title, len(rows)))
+        items += [("row", r, False) for r in rows]
+    if rep["muted"]:
+        items.append(("heading", "Muted", len(rep["muted"])))
+        items += [("row", r, True) for r in rep["muted"]]
+    return items
+
+
+def _list_view(items, w):
+    """The scrolling list: section headings and track rows, laid out top to bottom."""
+    y, placed = 4, []
+    for it in items:
+        if it[0] == "heading":
+            y += HEAD_GAP if placed else 0
+            placed.append((it, y))
+            y += HEADING
+        else:
+            placed.append((it, y))
+            y += ROW
+    doc = _Flipped.alloc().initWithFrame_(NSMakeRect(0, 0, w, y + 16))
+    doc.setAutoresizingMask_(NSViewWidthSizable)
+    secondary, tertiary = NSColor.secondaryLabelColor(), NSColor.tertiaryLabelColor()
+    for it, y in placed:
+        if it[0] == "heading":
+            _, title, n = it
+            h = _text(title.upper(), NSMakeRect(PAD, y + 2, w - 2 * PAD - 40, 16),
+                      size=10.5, weight=NSFontWeightSemibold, color=secondary)
+            h.setAutoresizingMask_(NSViewWidthSizable)
+            c = _text(str(n), NSMakeRect(w - PAD - 40, y + 2, 40, 16), size=10.5,
+                      weight=NSFontWeightSemibold, color=tertiary, right=True)
+            c.setAutoresizingMask_(NSViewMinXMargin)
+            doc.addSubview_(h)
+            doc.addSubview_(c)
+            line = NSView.alloc().initWithFrame_(NSMakeRect(PAD, y + HEADING - 1, w - 2 * PAD, 1))
+            line.setWantsLayer_(True)
+            line.layer().setBackgroundColor_(NSColor.separatorColor().CGColor())
+            line.setAutoresizingMask_(NSViewWidthSizable)
+            doc.addSubview_(line)
+        else:
+            _, r, muted = it
+            dw = 130
+            name = _text(r["name"], NSMakeRect(PAD, y + 3, w - 2 * PAD - dw - 8, 18), size=13,
+                         weight=NSFontWeightMedium, color=secondary if muted else None)
+            name.setAutoresizingMask_(NSViewWidthSizable)
+            info = _text(detail(r), NSMakeRect(w - PAD - dw, y + 5, dw, 16), size=11,
+                         color=tertiary, right=True)
+            info.setFont_(NSFont.monospacedDigitSystemFontOfSize_weight_(11, 0))
+            info.setAutoresizingMask_(NSViewMinXMargin)
+            doc.addSubview_(name)
+            doc.addSubview_(info)
+    return doc
+
+
 def show(path: Path):
-    """Open a floating window with the tracks with data of the cue at `path` (.cpr or .xml)."""
+    """Open a floating window with the tracks that play in the cue at `path` (.cpr or .xml)."""
     rep = report(path)
-    rows = rep["rows"]
-    height = min(HEADER + max(len(rows), 1) * ROW + 16, 760)
+    items = _layout(rep)
+    list_h = sum(ROW if i[0] == "row" else HEADING + HEAD_GAP for i in items) + 24
+    height = min(TOP + max(list_h, 40), MAX_HEIGHT)
     style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
-             | NSWindowStyleMaskUtilityWindow)
+             | NSWindowStyleMaskFullSizeContentView)
     panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-        NSMakeRect(80, 200, WIDTH, height), style, NSBackingStoreBuffered, False)
+        NSMakeRect(80, 160, WIDTH, height), style, NSBackingStoreBuffered, False)
     panel.setTitle_(f"Tracks with Data: {rep['project']}")
+    panel.setTitleVisibility_(NSWindowTitleHidden)
+    panel.setTitlebarAppearsTransparent_(True)
+    panel.setMovableByWindowBackground_(True)
     panel.setLevel_(NSFloatingWindowLevel)
     panel.setFloatingPanel_(True)
     panel.setHidesOnDeactivate_(False)       # stay visible while Cubase is in front
     panel.setReleasedWhenClosed_(False)
     panel.setCollectionBehavior_(NSWindowCollectionBehaviorCanJoinAllSpaces
                                  | NSWindowCollectionBehaviorFullScreenAuxiliary)
+    panel.setMinSize_((320, 200))
     ctl = _Controller.alloc().initWithText_(as_text(rep))
     panel.setDelegate_(ctl)
 
-    content = panel.contentView()
-    w, h = content.frame().size.width, content.frame().size.height
+    bg = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, WIDTH, height))
+    bg.setMaterial_(NSVisualEffectMaterialHUDWindow)
+    bg.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+    bg.setState_(NSVisualEffectStateActive)
+    panel.setContentView_(bg)
+    w, h = WIDTH, height
 
-    count = (f"{len(rows)} tracks with data (of {rep['total']} enabled at export)"
-             if rep["export"] else "No export found")
-    top = _label(count, NSMakeRect(12, h - 26, w - 120, 18), bold=True, size=13)
-    top.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
-    content.addSubview_(top)
+    # title area: cue name, then a summary line, then any note (stale export in orange)
+    title = _text(rep["project"], NSMakeRect(PAD, h - 58, w - 2 * PAD - 80, 24), size=18,
+                  weight=NSFontWeightBold)
+    title.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
+    bg.addSubview_(title)
+    if rep["export"]:
+        summary = f"{len(rep['rows'])} tracks playing"
+        if rep["muted"]:
+            summary += f"  ·  {len(rep['muted'])} muted"
+    else:
+        summary = "No export found"
+    sub = _text(summary, NSMakeRect(PAD, h - 78, w - 2 * PAD, 16), size=12,
+                color=NSColor.secondaryLabelColor())
+    sub.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
+    bg.addSubview_(sub)
 
-    copy = NSButton.buttonWithTitle_target_action_("Copy list", ctl, "copyList:")
-    copy.setFrame_(NSMakeRect(w - 104, h - 30, 92, 24))
-    copy.setAutoresizingMask_(NSViewMinXMargin | NSViewMinYMargin)   # stays top-right
-    content.addSubview_(copy)
+    copy = NSButton.buttonWithTitle_target_action_("Copy", ctl, "copyList:")
+    copy.setControlSize_(NSControlSizeSmall)
+    copy.setFont_(NSFont.systemFontOfSize_(11))
+    copy.setFrame_(NSMakeRect(w - PAD - 70, h - 56, 70, 22))
+    copy.setAutoresizingMask_(NSViewMinXMargin | NSViewMinYMargin)
+    bg.addSubview_(copy)
 
-    note = rep["note"] or (rep["export"].name if rep["export"] else "")
-    info = _label(note, NSMakeRect(12, h - HEADER + 2, w - 24, HEADER - 30), size=11)
-    info.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
-    if rep["stale"]:
-        info.setTextColor_(NSColor.systemOrangeColor())
-    content.addSubview_(info)
+    top = TOP
+    if rep["note"]:
+        lines = sum(1 + len(l) // 66 for l in rep["note"].split("\n"))     # ~66 characters a line
+        note_h = 16 * lines + 2
+        color = NSColor.systemOrangeColor() if rep["stale"] else NSColor.secondaryLabelColor()
+        note = _text(rep["note"], NSMakeRect(PAD, h - top - note_h + 6, w - 2 * PAD, note_h),
+                     size=11, color=color, wrap=True)
+        note.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
+        bg.addSubview_(note)
+        top += note_h + 4
 
-    scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h - HEADER))
+    scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h - top))
     scroll.setHasVerticalScroller_(True)
+    scroll.setAutohidesScrollers_(True)
+    scroll.setDrawsBackground_(False)
+    scroll.contentView().setDrawsBackground_(False)
     scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
-    doc = _Flipped.alloc().initWithFrame_(NSMakeRect(0, 0, w, max(len(rows), 1) * ROW + 8))
-    doc.setAutoresizingMask_(NSViewWidthSizable)
-    for i, r in enumerate(rows):
-        box = NSButton.checkboxWithTitle_target_action_(f"{r['n']:>3}.  {label(r)}", None, None)
-        box.setFrame_(NSMakeRect(10, 4 + i * ROW, w - 20, ROW))
-        box.setAutoresizingMask_(NSViewWidthSizable)
-        if r["muted"]:
-            box.setAlphaValue_(0.55)
-        doc.addSubview_(box)
-    scroll.setDocumentView_(doc)
-    content.addSubview_(scroll)
+    scroll.setDocumentView_(_list_view(items, w))
+    bg.addSubview_(scroll)
 
     _open.append((panel, ctl))
     NSApp.activateIgnoringOtherApps_(True)
