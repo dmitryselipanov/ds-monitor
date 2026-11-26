@@ -78,8 +78,19 @@ class HandleMixdownBwfTests(unittest.TestCase):
         self.export("3m37 Help Us V1.2 03.14.54.19.wav", GOOD)
         self.assertEqual(self.published(), ["3m37 Help Us V1.2 03.14.54.19.wav"])
         self.assertEqual(self.telegrams, [])
-        self.assertTrue(any(line.startswith("[bwf] PASS") for line in self.logs))
-        self.assertTrue(any("checking stamps at 23.976 fps" in line for line in self.logs))
+        self.assertTrue(any(line.startswith("[bwf] PASS") and "23.976 fps (iXML)" in line for line in self.logs))
+        self.assertFalse(any("checking stamps at" in line for line in self.logs))
+
+    def test_export_without_ixml_or_ds_scoring_rate_logs_the_fallback_once(self):
+        for _ in range(2):
+            self.export("3m37 Help Us V1.2 03.14.54.19.wav", bwf_wav(561_911_350, ixml=None))
+        self.assertEqual(sum("checking stamps at 23.976 fps" in line for line in self.logs), 1)
+
+    def test_frame_rate_mismatch_with_ds_scoring_alerts_but_publishes(self):
+        with mock.patch.object(monitor, "_fetch_monitor_cues", lambda p: {"cues": [], "frame_rate": "24"}):
+            self.export("3m37 Help Us V1.2 03.14.54.19.wav", GOOD, mode="block")
+        self.assertEqual(self.published(), ["3m37 Help Us V1.2 03.14.54.19.wav"])
+        self.assertIn("Cubase project is 23.976 fps but DS Scoring says 24", self.telegrams[0])
 
     def test_warn_mode_is_the_default_and_publishes_with_alert(self):
         self.export("3m37 Help Us V1.2 03.14.54.19.wav", EARLY)
@@ -131,6 +142,7 @@ class HandleMixdownBwfTests(unittest.TestCase):
     def test_frame_rate_from_ds_scoring(self):
         with mock.patch.object(monitor, "_fetch_monitor_cues", lambda p: {"cues": [], "frame_rate": "25"}):
             self.assertEqual(monitor.project_frame_rate({"id": "p1", "title": "33 Days"}), "25")
+        self.assertIsNone(monitor.project_frame_rate({"id": "p1", "title": "33 Days"}))  # none from DS Scoring
 
     def test_old_waiting_entries_still_load(self):
         (self.home / "mixdown-waiting.json").write_text(json.dumps({"/x/a.wav": [10, 20], "/x/b.wav": [1, 2, "bwf: x"]}))

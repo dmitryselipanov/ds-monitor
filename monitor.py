@@ -778,7 +778,7 @@ MIXDOWN_WAITING_DAYS = 14
 MONITOR_NOTIFY_URL = "https://ds-note-worker.drumadima.workers.dev/monitor-notify"
 _monitor_cues_cache = {}    # project id -> (fetched at, /monitor-cues response or None)
 _cue_names_error = None     # last failure logged, so a long outage is logged once
-_frame_rate_logged = set()  # projects whose missing frame_rate was already logged
+_frame_rate_logged = set()  # projects whose 23.976 fallback was already logged
 
 
 def _fetch_monitor_cues(project):
@@ -824,18 +824,9 @@ def fetch_cue_names(project):
 
 
 def project_frame_rate(project):
-    """The project's frame rate for the BWF check: DS Scoring's frame_rate when the Worker
-    returns one, else 23.976 (logged once per project)."""
-    raw = (_fetch_monitor_cues(project) or {}).get("frame_rate")
-    rate = normalize_rate(raw)
-    if rate:
-        return rate
-    key = project.get("id") or project.get("title")
-    if key not in _frame_rate_logged:
-        _frame_rate_logged.add(key)
-        why = f'unknown frame_rate "{raw}"' if raw else "no frame_rate from DS Scoring"
-        log(f"[bwf] {project.get('title')}: {why} — checking stamps at {DEFAULT_RATE} fps")
-    return DEFAULT_RATE
+    """DS Scoring's frame rate for the project (projects.frame_rate via /monitor-cues), or None.
+    The BWF check prefers the export's own iXML; this is its fallback."""
+    return normalize_rate((_fetch_monitor_cues(project) or {}).get("frame_rate"))
 
 
 _telegram_error = None
@@ -979,6 +970,11 @@ def handle_mixdown_wav(wav_path: Path, video_publisher=None):
                 verdict = evaluate_mixdown(wav_path.name, wav_bytes, rate=project_frame_rate(proj), mode=mode)
                 for line in verdict.log_lines:
                     log(line)
+                key = proj.get("id") or proj.get("title")
+                if verdict.rate_source == "default" and key not in _frame_rate_logged:
+                    _frame_rate_logged.add(key)
+                    log(f"[bwf] {proj.get('title')}: no iXML frame rate in the export and none from DS Scoring "
+                        f"— checking stamps at {DEFAULT_RATE} fps")
                 if verdict.alert and _bwf_alerted.get(wav_path) != identity:
                     _bwf_alerted[wav_path] = identity
                     bwf_alert(proj, verdict.alert)

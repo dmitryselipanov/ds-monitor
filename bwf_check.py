@@ -10,7 +10,11 @@ project start timecode, so a correct file matches to the sample: at 48 kHz and
 Ported from bwfcheck.py (vault: "BWF timestamp delivery - research and to-do -
 2026-11-26"), which was tested on real Cubase 15.0.30 exports.
 
+The frame rate comes from the export's own iXML (Cubase writes the project's
+rate there), else from DS Scoring's project setting, else 23.976.
+
 Command line: python3 bwf_check.py FILE_OR_FOLDER [...] [--fps 23.976]
+(--fps is used for files without an iXML frame rate)
 """
 
 from __future__ import annotations
@@ -124,12 +128,28 @@ def parse_wav(data: bytes) -> WavInfo:
     return info
 
 
-def ixml_frame_rate(ixml: str | None) -> str | None:
-    """The iXML MASTER_SPEED (e.g. 24000/1001) as a RATES key, if present."""
+def _ixml_value(ixml: str, tag: str) -> str | None:
+    match = re.search(rf"<{tag}>\s*([^<]+?)\s*</{tag}>", ixml)
+    return match.group(1) if match else None
+
+
+def ixml_timecode(ixml: str | None) -> tuple[str | None, str | None, bool]:
+    """(frame rate as a RATES key or None, the raw iXML value, drop-frame?) from an export's iXML.
+
+    Cubase writes the project's frame rate here (TIMECODE_RATE / MASTER_SPEED, e.g.
+    24000/1001, and TIMECODE_FLAG NDF or DF), so the export itself says which rate its
+    stamp and filename timecode are in.
+    """
     if not ixml:
-        return None
-    match = re.search(r"<MASTER_SPEED>\s*([^<]+?)\s*</MASTER_SPEED>", ixml)
-    return normalize_rate(match.group(1)) if match else None
+        return None, None, False
+    raw = _ixml_value(ixml, "TIMECODE_RATE") or _ixml_value(ixml, "MASTER_SPEED")
+    flag = (_ixml_value(ixml, "TIMECODE_FLAG") or "").strip().upper()
+    return normalize_rate(raw), raw, flag == "DF"
+
+
+def ixml_frame_rate(ixml: str | None) -> str | None:
+    """The iXML frame rate as a RATES key, if present and supported."""
+    return ixml_timecode(ixml)[0]
 
 
 def tc_string(frames: int, nominal: int) -> str:
@@ -146,7 +166,7 @@ class StampResult:
     notes: list[str] = field(default_factory=list)
 
 
-def check_stamp(name: str, info: WavInfo, rate: str = DEFAULT_RATE) -> StampResult:
+def check_stamp(name: str, info: WavInfo, rate: str = DEFAULT_RATE, rate_source: str = "") -> StampResult:
     """Compare the bext TimeReference with the filename timecode (bwfcheck's logic)."""
     nominal, real = RATES[rate]
     sr = info.sample_rate
@@ -178,7 +198,8 @@ def check_stamp(name: str, info: WavInfo, rate: str = DEFAULT_RATE) -> StampResu
     expected = int(expected)
     diff = tref - expected
     detail = (f"name {tc_string(name_frames, nominal)} | BWF {bwf_tc} | "
-              f"TimeReference {tref:,} expected {expected:,} | {rate} fps")
+              f"TimeReference {tref:,} expected {expected:,} | {rate} fps"
+              + (f" ({rate_source})" if rate_source else ""))
     if diff != 0 and tref != 0:
         seconds = Fraction(diff, sr)
         frames = Fraction(diff) / spf
@@ -188,11 +209,8 @@ def check_stamp(name: str, info: WavInfo, rate: str = DEFAULT_RATE) -> StampResu
                      f"({diff:+,} samples, {float(frames):+.2f} frames)")
     elif tref == 0 and expected != 0:
         notes.append(f"expected {tc_string(name_frames, nominal)}")
-    if info.ixml is not None:
+    if info.ixml is not None and rate_source != "iXML":
         detail += " | iXML"
-        ixml_rate = ixml_frame_rate(info.ixml)
-        if ixml_rate and ixml_rate != rate:
-            detail += f" (iXML says {ixml_rate} fps)"
     status = "PASS" if not notes else "FAIL"
     return StampResult(status, detail + ("; " + "; ".join(notes) if notes else ""), "; ".join(short), notes)
 
@@ -273,24 +291,54 @@ class MixdownVerdict:
     silence: str | None
     log_lines: list[str]
     alert: str | None   # one-line message for Telegram / Mac notification, or None
+    rate: str = DEFAULT_RATE
+    rate_source: str = "default"   # "iXML", "DS Scoring" or "default"
 
 
-def evaluate_mixdown(name: str, data: bytes, *, rate: str = DEFAULT_RATE, mode: str = "warn") -> MixdownVerdict:
+def choose_rate(info: WavInfo | None, project_rate: str | None) -> tuple[str, str, list[str], bool]:
+    """(rate, where it came from, warnings, drop-frame?) for one export.
+
+    The export's own iXML wins: it is the Cubase project's setting when the file was
+    made. DS Scoring's project frame rate is the fallback (exports without iXML), then 23.976.
+    """
+    warnings = []
+    ixml_rate, raw, drop_frame = ixml_timecode(info.ixml if info else None)
+    if raw and not ixml_rate:
+        warnings.append(f"iXML frame rate {raw} isn't supported by the check")
+    if ixml_rate:
+        if project_rate and project_rate != ixml_rate:
+            warnings.append(f"Cubase project is {ixml_rate} fps but DS Scoring says {project_rate}")
+        return ixml_rate, "iXML", warnings, drop_frame
+    if project_rate:
+        return project_rate, "DS Scoring", warnings, drop_frame
+    return DEFAULT_RATE, "default", warnings, drop_frame
+
+
+def evaluate_mixdown(name: str, data: bytes, *, rate: str | None = None, mode: str = "warn") -> MixdownVerdict:
     """Run the stamp and silence checks on a finished mixdown already read into memory.
 
-    mode "warn": always publish; "block": a stamp FAIL is not published; "off": no checks.
-    A silent mix or a WARN (no timecode in the name) never blocks.
+    `rate` is the project's frame rate from DS Scoring, used only when the export has no
+    iXML frame rate. mode "warn": always publish; "block": a stamp FAIL is not published;
+    "off": no checks. A silent mix, a WARN (no timecode in the name, drop-frame) or a
+    frame-rate mismatch never blocks.
     """
     if mode == "off":
         return MixdownVerdict(True, None, None, [], None)
     stem = TC_RE.sub("", Path(name).stem).strip() or Path(name).stem  # "3m37 Help Us V1.2"
+    rate_warnings, used_rate, source = [], rate or DEFAULT_RATE, "DS Scoring" if rate else "default"
     try:
         info = parse_wav(data)
     except ValueError as e:
         stamp, info = StampResult("FAIL", f"unreadable WAV: {e}", f"unreadable WAV ({e})"), None
     else:
-        stamp = check_stamp(name, info, rate)
+        used_rate, source, rate_warnings, drop_frame = choose_rate(info, rate)
+        if drop_frame:
+            stamp = StampResult("WARN", f"drop-frame timecode ({used_rate} DF) — the check only does non-drop",
+                                "drop-frame timecode, stamp not checked")
+        else:
+            stamp = check_stamp(name, info, used_rate, source)
     lines = [f"[bwf] {stamp.status} {name}: {stamp.detail}"]
+    lines += [f"[bwf] WARN {name}: {w}" for w in rate_warnings]
     silence = None
     if info is not None and info.data_offset is not None:
         try:
@@ -308,12 +356,13 @@ def evaluate_mixdown(name: str, data: bytes, *, rate: str = DEFAULT_RATE, mode: 
         alerts.append(f"{stamp.summary}, {outcome}")
     if silence:
         alerts.append(silence)
+    alerts += rate_warnings
     alert = f"{stem}: " + "; ".join(alerts) if alerts else None
-    return MixdownVerdict(not blocked, stamp, silence, lines, alert)
+    return MixdownVerdict(not blocked, stamp, silence, lines, alert, used_rate, source)
 
 
 def main(argv: list[str]) -> int:
-    rate, paths = DEFAULT_RATE, []
+    rate, paths = None, []  # --fps: used for files without an iXML frame rate
     it = iter(argv)
     for a in it:
         if a == "--fps":
@@ -322,7 +371,7 @@ def main(argv: list[str]) -> int:
             rate = normalize_rate(a.split("=", 1)[1]) or ""
         else:
             paths.append(Path(a))
-    if rate not in RATES or not paths:
+    if (rate is not None and rate not in RATES) or not paths:
         print(__doc__)
         return 2
     files = []
@@ -339,9 +388,11 @@ def main(argv: list[str]) -> int:
         verdict = evaluate_mixdown(f.name, data, rate=rate, mode="block")
         bad += verdict.stamp.status == "FAIL"
         print(f"{verdict.stamp.status}  {f.name}\n      {verdict.stamp.detail}")
-        if verdict.silence:
-            print(f"      WARN {verdict.silence}")
-    print(f"\n{len(files)} file(s), {bad} failed, frame rate {rate}")
+        for line in verdict.log_lines[1:]:
+            if "WARN" in line:
+                print("      WARN " + line.split(": ", 1)[1])
+    fallback = f"{rate} fps" if rate else f"{DEFAULT_RATE} fps"
+    print(f"\n{len(files)} file(s), {bad} failed (frame rate from each file's iXML, else {fallback})")
     return 1 if bad else 0
 
 
