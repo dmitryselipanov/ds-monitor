@@ -56,15 +56,29 @@ def wav_header_problem(data: bytes, total_size: int | None = None) -> str | None
     return "no data chunk"
 
 
+HEAD_BYTES = 64 * 1024
+MAX_HEAD_BYTES = 16 * 1024 * 1024
+
+
 def wav_file_problem(path: Path) -> str | None:
-    """Check the header of a WAV on disk without reading the audio."""
+    """Check the header of a WAV on disk without reading the audio.
+
+    Reads the first 64 KB, and more when the chunks before `data` (bext, iXML,
+    XMP…) run past that, up to 16 MB.
+    """
     try:
         size = path.stat().st_size
         with open(path, "rb") as f:
-            head = f.read(64 * 1024)
+            want = HEAD_BYTES
+            while True:
+                f.seek(0)
+                head = f.read(want)
+                problem = wav_header_problem(head, size)
+                if problem != "no data chunk" or len(head) >= size or want >= MAX_HEAD_BYTES:
+                    return problem
+                want *= 4
     except OSError as e:
         return str(e)
-    return wav_header_problem(head, size)
 
 
 def file_is_open(path: Path) -> bool:
