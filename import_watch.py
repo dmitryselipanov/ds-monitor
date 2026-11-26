@@ -35,7 +35,8 @@ def dialog_open() -> bool:
     """Is Cubase's "Import Options" window showing?"""
     script = ('tell application "System Events" to exists window "%s" of '
               '(first process whose name starts with "Cubase")' % DIALOG)
-    return _run(["/usr/bin/osascript", "-e", script]).strip() == "true"
+    # long timeout: the first call can sit behind macOS's permission prompt until it's answered
+    return _run(["/usr/bin/osascript", "-e", script], timeout=120).strip() == "true"
 
 
 def open_cprs() -> list[str]:
