@@ -330,7 +330,13 @@ def main(argv: list[str]) -> int:
         files += sorted(p.rglob("*.wav")) if p.is_dir() else [p]
     bad = 0
     for f in files:
-        verdict = evaluate_mixdown(f.name, f.read_bytes(), rate=rate, mode="block")
+        try:
+            data = f.read_bytes()
+        except OSError as e:
+            bad += 1
+            print(f"FAIL  {f.name}\n      {e}")
+            continue
+        verdict = evaluate_mixdown(f.name, data, rate=rate, mode="block")
         bad += verdict.stamp.status == "FAIL"
         print(f"{verdict.stamp.status}  {f.name}\n      {verdict.stamp.detail}")
         if verdict.silence:
