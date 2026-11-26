@@ -2,6 +2,9 @@
 """Print the colours of a Cubase project's track-list folders and tracks (read-only).
 
 Usage:  python3 cpr_colors.py "/path/to/project.cpr"
+        python3 cpr_colors.py --probe "/path/to/project.cpr" "PRIM Flute" "WW" ...
+        (--probe: every labelled field stored with each named track or folder, to find where
+        the colour lives; compare tracks of different colours)
 
 One line per folder, indented like the track list:
   - **STRINGS**  folder #RRGGBBAA  · tracks: #RRGGBBAA ×812, default ×4
@@ -85,7 +88,27 @@ def main(path: str):
         print("\nTracks outside folders: " + ", ".join(f"{k} ×{v}" for k, v in loose.most_common(6)))
 
 
+def probe(path: str, names: list[str]):
+    """For each header with one of `names`: every 4+ letter ASCII label inside its object (up to
+    the next header, at most 6 KB) with the 16 bytes after it, so fields can be compared."""
+    b = open(path, "rb").read()
+    hs = sorted(headers(b, FOLDER) + headers(b, TRACK))
+    starts = [h[0] for h in hs] + [len(b)]
+    for i, h in enumerate(hs):
+        if h[3] not in names:
+            continue
+        kind = "folder" if b[h[0]:h[0] + 4] == FOLDER else "track"
+        end = min(starts[i + 1], h[2] + 6000)
+        print(f"\n== {kind} {h[3]!r} at {h[0]} ({end - h[2]} bytes)")
+        for m in re.finditer(rb"[A-Za-z][A-Za-z0-9 _]{3,40}", b[h[2]:end]):
+            at = h[2] + m.end()
+            print(f"  +{m.start():5d} {m.group().decode()!r:34s} {b[at:at + 16].hex(' ')}")
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    if len(sys.argv) >= 4 and sys.argv[1] == "--probe":
+        probe(sys.argv[2], sys.argv[3:])
+    elif len(sys.argv) == 2:
+        main(sys.argv[1])
+    else:
         sys.exit(__doc__)
-    main(sys.argv[1])
