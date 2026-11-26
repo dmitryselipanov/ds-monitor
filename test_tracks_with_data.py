@@ -100,6 +100,25 @@ class ReportTests(unittest.TestCase):
         self.assertIn("No XML export", rep["note"])
         self.assertIn("No XML export", as_text(rep))
 
+    def test_full_and_marker_only_exports_are_read(self):
+        cpr = self.dir / "1m02 City Pulse V1.1.cpr"
+        cpr.write_bytes(b"x")
+        (self.dir / "1m02 City Pulse V1.1.xml").write_text(
+            '<?xml version="1.0" encoding="utf-8"?>\n<tracklist2>\n<list name="track" type="obj">\n'
+            '<obj class="MMarkerTrackEvent" ID="1"><obj class="MListNode" name="Node" ID="2">'
+            '<string name="Name" value="Cue"/></obj></obj>\n</list>\n</tracklist2>\n', encoding="utf-8")
+        rep = report(cpr)
+        self.assertEqual(rep["export"].name, "1m02 City Pulse V1.1.xml")
+        self.assertEqual(rep["rows"], [])
+        self.assertIn("holds no tracks", rep["note"])
+        self.assertTrue(rep["export"].read_text().startswith("<?xml"))     # left untouched
+
+    def test_subtitle_xml_is_not_an_export(self):
+        cpr = self.dir / "a.cpr"
+        cpr.write_bytes(b"x")
+        (self.dir / "a.xml").write_text("<tt><body/></tt>")
+        self.assertIsNone(report(cpr)["export"])
+
     def test_xml_picked_directly(self):
         x = self.dir / "a.xml"
         write_slim(x)

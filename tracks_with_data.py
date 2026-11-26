@@ -18,26 +18,44 @@ MUTED = 2
 _TRACKS = re.compile(r"<ds_tracks><!\[CDATA\[(.*?)\]\]></ds_tracks>", re.S)
 
 
+def _is_cubase_xml(path: Path) -> bool:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            head = f.read(512)
+    except OSError:
+        return False
+    return any(f"<{r}" in head for r in ("tracklist2", "tracklist"))
+
+
 def export_for(path: Path) -> Path | None:
-    """The slim XML export of a cue: `path` itself if it's an .xml, else the .xml with the
-    .cpr's name, else the newest slim XML in the .cpr's folder."""
+    """The XML export of a cue: `path` itself if it's an .xml, else the .xml with the .cpr's
+    name, else the newest slim XML in the .cpr's folder, else its newest Cubase XML.
+    Full (not yet slimmed) and older exports count too."""
     from xml_slim import is_slim
     path = Path(path)
     if path.suffix.lower() == ".xml":
-        return path if is_slim(path) else None
+        return path if _is_cubase_xml(path) else None
     same = path.with_suffix(".xml")
-    if same.exists() and is_slim(same):
+    if same.exists() and _is_cubase_xml(same):
         return same
-    xmls = [x for x in path.parent.glob("*.xml") if is_slim(x)]
-    return max(xmls, key=lambda x: x.stat().st_mtime) if xmls else None
+    xmls = [x for x in path.parent.glob("*.xml") if not x.name.startswith(".") and _is_cubase_xml(x)]
+    slims = [x for x in xmls if is_slim(x)]
+    pick = slims or xmls
+    return max(pick, key=lambda x: x.stat().st_mtime) if pick else None
 
 
 def read_tracks(xml_path: Path) -> list[dict]:
-    """The ds_tracks list of a slim XML, in the export's order (Cubase's track-list order)."""
-    text = Path(xml_path).read_text(encoding="utf-8", errors="replace")
+    """The tracks of an XML export in the export's order (Cubase's track-list order): the
+    ds_tracks list of a slim file, or read from a full export in memory (the file isn't changed)."""
+    from xml_slim import is_slim, slim
+    xml_path = Path(xml_path)
+    if is_slim(xml_path):
+        text = xml_path.read_text(encoding="utf-8", errors="replace")
+    else:
+        text, _ = slim(xml_path)
     m = _TRACKS.search(text)
     if not m:
-        raise ValueError(f"{Path(xml_path).name} has no track list (not a slim DS Monitor export)")
+        raise ValueError(f"{xml_path.name} has no track list")
     return json.loads(m.group(1).replace("]]]]><![CDATA[>", "]]>"))
 
 
@@ -96,6 +114,9 @@ def report(path: Path) -> dict:
     out["rows"] = summarize(tracks)
     out["total"] = len(tracks)
     notes = []
+    if not tracks:
+        notes.append(f"{export.name} holds no tracks (probably an older markers-only export). "
+                     "In that cue: select all tracks → File › Export › Selected Tracks, saved over it.")
     if export.stem != path.stem and path.suffix.lower() == ".cpr":
         notes.append(f"Read from {export.name} (no export named like this .cpr).")
     if path.suffix.lower() == ".cpr":
