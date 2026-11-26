@@ -1536,8 +1536,10 @@ class DSMonitorApp(rumps.App):
     def _watch_imports(self):
         """Background: when Cubase's Import Options (track list) shows, queue the cue it's
         reading; when it closes, queue a close. The panel itself is opened on the main thread."""
-        from import_watch import Watcher
-        w = Watcher()
+        import import_watch
+        import_watch.log = log
+        w = import_watch.Watcher()
+        log("[data] watching for Cubase's Import Tracks from Project")
         while True:
             time.sleep(1)
             if not self._auto:
@@ -1561,7 +1563,10 @@ class DSMonitorApp(rumps.App):
                     self._auto_panel = None
                 if kind == "show":
                     log(f"[data] Import Tracks from Project: {path}")
-                    self._auto_panel = data_window.show(Path(path), activate=False)
+                    p = self._auto_panel = data_window.show(Path(path), activate=False)
+                    f = p.frame()
+                    log(f"[data] panel shown: visible={bool(p.isVisible())} on active space={bool(p.isOnActiveSpace())} "
+                        f"at x={f.origin.x:.0f} y={f.origin.y:.0f} w={f.size.width:.0f} h={f.size.height:.0f}")
             except Exception as e:
                 log(f"[data] automatic panel failed: {e}")
 

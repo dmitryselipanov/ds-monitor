@@ -10,25 +10,49 @@ needs DS Monitor's Python in Privacy › Accessibility) and open files (lsof).
 """
 
 import subprocess
+from pathlib import Path
 
 DIALOG = "Import Options"
 _SKIP_DIRS = ("/auto saves/",)
 
+log = lambda msg: None      # monitor.py sets this to its log()
+_said = set()
+
+
+def _once(msg):
+    """Log a message the first time it's seen (the watcher polls every second)."""
+    if msg not in _said:
+        _said.add(msg)
+        log(msg)
+
 
 def _run(cmd, timeout=5) -> str:
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout
-    except Exception:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if r.returncode:
+            _once(f"[data] {Path(cmd[0]).name} failed ({r.returncode}): {r.stderr.strip()[:300]}")
+        return r.stdout
+    except Exception as e:
+        _once(f"[data] {Path(cmd[0]).name} failed: {e}")
         return ""
 
 
+_front = None
+
+
 def cubase_in_front() -> bool:
+    global _front
     try:
         from AppKit import NSWorkspace
         app = NSWorkspace.sharedWorkspace().frontmostApplication()
-        return bool(app) and str(app.localizedName() or "").startswith("Cubase")
-    except Exception:
+        name = str(app.localizedName() or "") if app else ""
+    except Exception as e:
+        _once(f"[data] can't tell the front app: {e}")
         return True          # can't tell: look anyway
+    if name != _front:
+        _front = name
+        log(f"[data] front app: {name or '?'}")
+    return name.startswith("Cubase")
 
 
 def dialog_open() -> bool:
@@ -58,12 +82,15 @@ class Watcher:
         """`cprs` is called only while the dialog is up and no panel was shown for it yet."""
         if dialog and not self.showing:
             files = cprs()
+            if not self.dialog:
+                log(f"[data] {DIALOG} is open; .cpr files Cubase has open: {files or 'none yet'}")
             self.dialog = True
             if files:
                 self.showing = True
                 return ("show", files[-1])
             return None            # .cpr not seen (yet): try again next poll
         if not dialog and self.dialog:
+            log(f"[data] {DIALOG} closed")
             was = self.showing
             self.showing = self.dialog = False
             return ("close", None) if was else None
