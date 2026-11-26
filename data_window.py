@@ -231,12 +231,26 @@ def show(path: Path, activate: bool = True, rep: dict | None = None, visible: bo
     ctl = _Controller.alloc().initWithText_(as_text(rep))
     panel.setDelegate_(ctl)
 
-    bg = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, WIDTH, height))
+    # tall enough for the whole list (up to the screen's height), keeping the remembered
+    # position's top edge and width; moved up if the list wouldn't fit below it
+    screen = panel.screen() or NSScreen.mainScreen()
+    if screen is not None:
+        vis, f = screen.visibleFrame(), panel.frame()
+        title_bar = f.size.height - panel.contentRectForFrameRect_(f).size.height
+        hgt = min(needed + title_bar, vis.size.height)
+        top_edge = min(f.origin.y + f.size.height, vis.origin.y + vis.size.height)
+        y = max(vis.origin.y, top_edge - hgt)
+        panel.setFrame_display_(NSMakeRect(f.origin.x, y, f.size.width, hgt), True)
+
+    # lay everything out in the window's real size (the size set above, not `needed`, which
+    # can be taller than the screen; laying out for `needed` put the title off the top)
+    content = panel.contentRectForFrameRect_(panel.frame())
+    w, h = content.size.width, content.size.height
+    bg = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
     bg.setMaterial_(NSVisualEffectMaterialHUDWindow)
     bg.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
     bg.setState_(NSVisualEffectStateActive)
     panel.setContentView_(bg)
-    w, h = WIDTH, height
 
     # title area: cue name, then a summary line, then any note (stale export in orange)
     title = _text(rep["project"], NSMakeRect(PAD, h - 58, w - 2 * PAD - 80, 24), size=18,
@@ -279,16 +293,6 @@ def show(path: Path, activate: bool = True, rep: dict | None = None, visible: bo
     scroll.setDocumentView_(_list_view(items, w))
     bg.addSubview_(scroll)
 
-    # tall enough for the whole list (up to the screen's height), keeping the remembered
-    # position's top edge and width; moved up if the list wouldn't fit below it
-    screen = panel.screen() or NSScreen.mainScreen()
-    if screen is not None:
-        vis, f = screen.visibleFrame(), panel.frame()
-        title_bar = f.size.height - panel.contentRectForFrameRect_(f).size.height
-        hgt = min(needed + title_bar, vis.size.height)
-        top = min(f.origin.y + f.size.height, vis.origin.y + vis.size.height)
-        y = max(vis.origin.y, top - hgt)
-        panel.setFrame_display_(NSMakeRect(f.origin.x, y, f.size.width, hgt), True)
 
     _open.append((panel, ctl))
     if activate:
