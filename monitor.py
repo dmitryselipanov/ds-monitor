@@ -1534,14 +1534,19 @@ class DSMonitorApp(rumps.App):
         log(f"[data] automatic panel {'on' if self._auto else 'off'}")
 
     def _watch_imports(self):
-        """Background: when Cubase's Import Options (track list) shows, queue the cue it's
-        reading; when it closes, queue a close. The panel itself is opened on the main thread."""
+        """Background: when Cubase's Import Options (track list) shows, open the panel for the cue
+        it's reading; when it closes, close the panel. AppKit work is handed to the main thread
+        at once (callAfter), not left for the next timer tick."""
         import import_watch
         import_watch.log = log
         w = import_watch.Watcher()
         log("[data] watching for Cubase's Import Tracks from Project")
+        try:
+            from PyObjCTools.AppHelper import callAfter
+        except Exception:
+            callAfter = None
         while True:
-            time.sleep(1)
+            time.sleep(w.interval())
             if not self._auto:
                 continue
             try:
@@ -1551,9 +1556,13 @@ class DSMonitorApp(rumps.App):
                 continue
             if ev:
                 self._import_events.append(ev)
+                if callAfter:
+                    callAfter(self.handle_imports, None)
 
     @rumps.timer(0.5)
     def handle_imports(self, _):
+        """Main thread: open/close the automatic panel (called right away via callAfter; the
+        timer is a fallback)."""
         while self._import_events:
             kind, path = self._import_events.pop(0)
             try:
