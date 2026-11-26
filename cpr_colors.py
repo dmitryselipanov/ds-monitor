@@ -89,8 +89,9 @@ def main(path: str):
 
 
 def probe(path: str, names: list[str]):
-    """For each header with one of `names`: every 4+ letter ASCII label inside its object (up to
-    the next header, at most 6 KB) with the 16 bytes after it, so fields can be compared."""
+    """For each header with one of `names`: every 4+ letter ASCII label in the 3 KB after its name,
+    with the 16 bytes after it, so fields can be compared. "--- next: X" marks where the next
+    track or folder header starts (fields past it may belong to that one)."""
     b = open(path, "rb").read()
     hs = sorted(headers(b, FOLDER) + headers(b, TRACK))
     starts = [h[0] for h in hs] + [len(b)]
@@ -98,10 +99,13 @@ def probe(path: str, names: list[str]):
         if h[3] not in names:
             continue
         kind = "folder" if b[h[0]:h[0] + 4] == FOLDER else "track"
-        end = min(starts[i + 1], h[2] + 6000)
-        print(f"\n== {kind} {h[3]!r} at {h[0]} ({end - h[2]} bytes)")
+        end = h[2] + 3000
+        nxt = [x for x in hs[i + 1:] if x[0] < end]
+        print(f"\n== {kind} {h[3]!r} at {h[0]} (object ends +{h[1] - h[2]})")
         for m in re.finditer(rb"[A-Za-z][A-Za-z0-9 _]{3,40}", b[h[2]:end]):
             at = h[2] + m.end()
+            while nxt and nxt[0][0] < h[2] + m.start():
+                print(f"  --- next: {nxt.pop(0)[3]!r}")
             print(f"  +{m.start():5d} {m.group().decode()!r:34s} {b[at:at + 16].hex(' ')}")
 
 
