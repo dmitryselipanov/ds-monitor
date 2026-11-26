@@ -7,9 +7,9 @@ Usage:  python3 cpr_colors.py "/path/to/project.cpr"
         the colour lives; compare tracks of different colours)
 
 One line per folder, indented like the track list:
-  - **STRINGS**  folder #RRGGBBAA  · tracks: #RRGGBBAA ×812, default ×4
-"default" = no colour set (Cubase's default). Colours are printed as the stored 32-bit value in
-hex; which byte order Cubase uses (RGBA or ARGB) is checked by comparing with the track list.
+  - **SSS**  · tracks: colour 166 ×161
+Colours are the number Cubase stores per track (see colour()); "none" = no colour label found.
+Folders' own colours aren't read yet (their label isn't next to the folder name).
 
 How: folder and track headers are archive objects (class refs 0x800000e7 folders, 0x800000bf
 tracks in Cubase 15 files; see cprfolders.py in the vault's template Tools). Folder objects span
@@ -37,14 +37,18 @@ def headers(b: bytes, ref: bytes) -> list[tuple[int, int, int, str]]:
 
 
 def colour(b: bytes, after: int, limit: int) -> int | None:
-    """The colour stored after a header's name, or None (default) if there's none before `limit`."""
-    seg = b[after:min(limit, after + 400)]
+    """A track's colour: the value after its b"braF" label, about 1.1-1.3 KB after the name
+    (after the track's controller names, before its track preset path), up to the next header.
+    It's a number per colour (an index into Cubase's project colours, by the look of it), not
+    RGB: in Orchestral_v17 PRIM Flute 186, SSB Horn Legato 170, SF Timpani 15, SSS Vlns I 166,
+    Claire Solo Legato 107. None = no label found (no colour set)."""
+    seg = b[after:min(limit, after + 3000)]
     k = seg.find(b"braF")
-    return int.from_bytes(seg[k + 10:k + 14], "big") if k >= 0 and len(seg) >= k + 14 else None
+    return int.from_bytes(seg[k + 6:k + 14], "big") if k >= 0 and len(seg) >= k + 14 else None
 
 
 def hexc(c: int | None) -> str:
-    return "default" if c is None else f"#{c:08X}"
+    return "none" if c is None else f"colour {c}"
 
 
 def main(path: str):
@@ -63,7 +67,6 @@ def main(path: str):
         inside = [f for f in folders if f[0] < pos < f[1]]
         return max(inside, key=lambda f: f[0])[0] if inside else None
 
-    fcol = {f[0]: colour(b, f[2], next_start(f[0])) for f in folders}
     tcols = {}                                   # folder start → Counter of its own tracks' colours
     loose = Counter()
     for t in tracks:
@@ -79,7 +82,7 @@ def main(path: str):
             tc = tcols.get(f[0])
             tline = ("  · tracks: " + ", ".join(f"{k} ×{v}" for k, v in tc.most_common(4))
                      + (" …" if len(tc) > 4 else "")) if tc else ""
-            print("  " * depth + f"- **{f[3]}**  folder {hexc(fcol[f[0]])}{tline}")
+            print("  " * depth + f"- **{f[3]}**{tline}")
             walk(f[0], depth + 1)
 
     print(f"{path}\n{len(folders)} folders, {len(tracks)} tracks\n")
