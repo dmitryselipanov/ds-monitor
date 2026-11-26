@@ -7,16 +7,32 @@ Uses AppKit through PyObjC, which rumps already brings in.
 
 from pathlib import Path
 
+import AppKit
 import objc
-from AppKit import (NSApp, NSBackingStoreBuffered, NSButton, NSColor, NSFloatingPanelLevel, NSFont,
-                    NSMakeRect, NSModalResponseOK, NSOpenPanel, NSPanel, NSPasteboard,
-                    NSPasteboardTypeString, NSScrollView, NSTextField, NSView,
-                    NSViewHeightSizable, NSViewMinXMargin, NSViewMinYMargin, NSViewWidthSizable,
-                    NSWindowCollectionBehaviorCanJoinAllSpaces,
-                    NSWindowCollectionBehaviorFullScreenAuxiliary,
-                    NSWindowStyleMaskClosable, NSWindowStyleMaskResizable,
-                    NSWindowStyleMaskTitled, NSWindowStyleMaskUtilityWindow)
+from AppKit import (NSApp, NSButton, NSColor, NSFont, NSMakeRect, NSOpenPanel, NSPanel,
+                    NSPasteboard, NSScrollView, NSTextField, NSView)
 from Foundation import NSObject, NSURL
+
+
+def _const(name, value):
+    """AppKit constants by name, with Apple's documented value if this PyObjC lacks it."""
+    return getattr(AppKit, name, value)
+
+
+NSBackingStoreBuffered = _const("NSBackingStoreBuffered", 2)
+NSFloatingWindowLevel = _const("NSFloatingWindowLevel", 3)
+NSModalResponseOK = _const("NSModalResponseOK", 1)
+NSPasteboardTypeString = _const("NSPasteboardTypeString", "public.utf8-plain-text")
+NSViewMinXMargin = _const("NSViewMinXMargin", 1)
+NSViewWidthSizable = _const("NSViewWidthSizable", 2)
+NSViewMinYMargin = _const("NSViewMinYMargin", 8)
+NSViewHeightSizable = _const("NSViewHeightSizable", 16)
+NSWindowCollectionBehaviorCanJoinAllSpaces = _const("NSWindowCollectionBehaviorCanJoinAllSpaces", 1)
+NSWindowCollectionBehaviorFullScreenAuxiliary = _const("NSWindowCollectionBehaviorFullScreenAuxiliary", 256)
+NSWindowStyleMaskTitled = _const("NSWindowStyleMaskTitled", 1)
+NSWindowStyleMaskClosable = _const("NSWindowStyleMaskClosable", 2)
+NSWindowStyleMaskResizable = _const("NSWindowStyleMaskResizable", 8)
+NSWindowStyleMaskUtilityWindow = _const("NSWindowStyleMaskUtilityWindow", 16)
 
 from tracks_with_data import as_text, label, report
 
@@ -91,7 +107,7 @@ def show(path: Path):
     panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
         NSMakeRect(80, 200, WIDTH, height), style, NSBackingStoreBuffered, False)
     panel.setTitle_(f"Tracks with Data: {rep['project']}")
-    panel.setLevel_(NSFloatingPanelLevel)
+    panel.setLevel_(NSFloatingWindowLevel)
     panel.setFloatingPanel_(True)
     panel.setHidesOnDeactivate_(False)       # stay visible while Cubase is in front
     panel.setReleasedWhenClosed_(False)
