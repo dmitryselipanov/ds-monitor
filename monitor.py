@@ -46,6 +46,7 @@ from watchdog.events import FileSystemEventHandler
 from wav_check import read_finished_wav
 from video_publisher import VideoPublisher, cue_from_filename
 from mixdown_publisher import publish_mixdown, review_folder
+from bwf_check import DEFAULT_RATE, MODES as BWF_MODES, evaluate_mixdown, normalize_rate
 from video_publisher import local_dropbox_project
 
 try:
@@ -80,6 +81,20 @@ def load_music_start_bar():
     except Exception as e:
         log(f"[config] failed to load music_start_bar: {e}")
     return 1
+
+def load_bwf_mode():
+    """BWF timestamp check on review mixdowns: "warn" (default: publish, log and alert),
+    "block" (a failing stamp isn't published) or "off". Set "bwf_check" in
+    ~/.ds-monitor-config.json; read for every mixdown, so no restart is needed."""
+    try:
+        if DS_CONFIG_PATH.exists():
+            mode = str(json.loads(DS_CONFIG_PATH.read_text()).get("bwf_check", "warn")).strip().lower()
+            if mode in BWF_MODES:
+                return mode
+            log(f'[config] unknown bwf_check "{mode}" (use warn, block or off) — using warn')
+    except Exception as e:
+        log(f"[config] failed to load bwf_check: {e}")
+    return "warn"
 
 EXTRA_WATCH_DIRS = load_extra_watch_dirs()
 ALL_WATCH_DIRS = [WATCH_DIR] + EXTRA_WATCH_DIRS
@@ -760,12 +775,14 @@ MONITOR_CUES_URL = "https://ds-note-worker.drumadima.workers.dev/monitor-cues"
 CUE_NAMES_TTL = 60
 MIXDOWN_WAITING_PATH = Path.home() / "Library" / "Caches" / "ds-monitor" / "mixdown-waiting.json"
 MIXDOWN_WAITING_DAYS = 14
-_cue_names_cache = {}       # project id -> (fetched at, ["2m20 Our Own Church", ...] or None)
+MONITOR_NOTIFY_URL = "https://ds-note-worker.drumadima.workers.dev/monitor-notify"
+_monitor_cues_cache = {}    # project id -> (fetched at, /monitor-cues response or None)
 _cue_names_error = None     # last failure logged, so a long outage is logged once
+_frame_rate_logged = set()  # projects whose missing frame_rate was already logged
 
 
-def fetch_cue_names(project):
-    """The project's "{cue} {title}" names from DS Scoring, or None if they can't be read.
+def _fetch_monitor_cues(project):
+    """The Worker's /monitor-cues response for the project, or None if it can't be read.
 
     Cues are hidden from the anon key, so they come through the Worker with
     DS_MONITOR_SECRET (the Worker's MONITOR_SECRET), set in the LaunchAgent plist.
@@ -774,7 +791,7 @@ def fetch_cue_names(project):
     secret = os.environ.get("DS_MONITOR_SECRET", "").strip()
     if not secret or not project.get("id"):
         return None
-    cached = _cue_names_cache.get(project["id"])
+    cached = _monitor_cues_cache.get(project["id"])
     if cached and time.time() - cached[0] < CUE_NAMES_TTL:
         return cached[1]
     try:
@@ -785,16 +802,78 @@ def fetch_cue_names(project):
             # Cloudflare refuses urllib's default User-Agent (error 1010).
             headers={"Authorization": f"Bearer {secret}", "User-Agent": "ds-monitor"})
         with urllib.request.urlopen(req, timeout=10) as r:
-            cues = json.loads(r.read())["cues"]
-        names = [f"{c['cue_number'].strip()} {c['title'].strip()}" for c in cues]
+            payload = json.loads(r.read())
+        if not isinstance(payload.get("cues"), list):
+            raise ValueError("response has no cue list")
         _cue_names_error = None
     except Exception as e:
         if str(e) != _cue_names_error:
             _cue_names_error = str(e)
             log(f"[mixdown] couldn't read DS Scoring cue titles ({e}) — matching Dropbox folder names only")
-        names = None
-    _cue_names_cache[project["id"]] = (time.time(), names)
-    return names
+        payload = None
+    _monitor_cues_cache[project["id"]] = (time.time(), payload)
+    return payload
+
+
+def fetch_cue_names(project):
+    """The project's "{cue} {title}" names from DS Scoring, or None if they can't be read."""
+    payload = _fetch_monitor_cues(project)
+    if payload is None:
+        return None
+    return [f"{c['cue_number'].strip()} {c['title'].strip()}" for c in payload["cues"]]
+
+
+def project_frame_rate(project):
+    """The project's frame rate for the BWF check: DS Scoring's frame_rate when the Worker
+    returns one, else 23.976 (logged once per project)."""
+    raw = (_fetch_monitor_cues(project) or {}).get("frame_rate")
+    rate = normalize_rate(raw)
+    if rate:
+        return rate
+    key = project.get("id") or project.get("title")
+    if key not in _frame_rate_logged:
+        _frame_rate_logged.add(key)
+        why = f'unknown frame_rate "{raw}"' if raw else "no frame_rate from DS Scoring"
+        log(f"[bwf] {project.get('title')}: {why} — checking stamps at {DEFAULT_RATE} fps")
+    return DEFAULT_RATE
+
+
+_telegram_error = None
+
+
+def send_telegram(text):
+    """Message Dmitry through the DS Scoring bot. The bot token stays in the Worker
+    (ds-note-worker /monitor-notify, behind DS_MONITOR_SECRET). Returns True if sent."""
+    global _telegram_error
+    secret = os.environ.get("DS_MONITOR_SECRET", "").strip()
+    if not secret:
+        reason = "DS_MONITOR_SECRET not set"
+    else:
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                MONITOR_NOTIFY_URL, data=json.dumps({"text": text}).encode(), method="POST",
+                headers={"Authorization": f"Bearer {secret}", "Content-Type": "application/json",
+                         "User-Agent": "ds-monitor"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                if json.loads(r.read() or b"{}").get("ok"):
+                    _telegram_error = None
+                    return True
+                reason = "Worker didn't confirm delivery"
+        except Exception as e:
+            reason = str(e)
+    if reason != _telegram_error:
+        _telegram_error = reason
+        log(f"[telegram] couldn't send ({reason}) — Mac notification and log only")
+    return False
+
+
+def bwf_alert(project, text):
+    """A BWF/silence alert: log, Mac notification and Telegram."""
+    title = project.get("title") or "DS Monitor"
+    log(f"[bwf] alert: {text}")
+    notify("DS Monitor", f"{title}: mixdown check", text)
+    send_telegram(f"\U0001F3BC {title}\n{text}")
 
 
 def _load_mixdown_waiting():
@@ -812,13 +891,16 @@ def _save_mixdown_waiting():
         log(f"[mixdown] couldn't save the list of unpublished mixdowns: {e}")
 
 
-def _set_mixdown_waiting(wav_path, identity):
+def _set_mixdown_waiting(wav_path, identity, reason=None):
+    """Add (identity = (size, mtime_ns)) or remove (None) a skipped mixdown. `reason` is set
+    for one held back by the BWF check: re-checking the same bytes can't change the result,
+    so those wait for a re-export instead of the name recheck."""
     with _mixdown_inflight_lock:
         if identity is None:
             if _mixdown_waiting.pop(wav_path, None) is None:
                 return
         else:
-            _mixdown_waiting[wav_path] = list(identity)
+            _mixdown_waiting[wav_path] = list(identity[:2]) + ([reason] if reason else [])
         _save_mixdown_waiting()
 
 
@@ -837,9 +919,11 @@ def retry_waiting_mixdowns(video_publisher=None):
         except OSError:
             _set_mixdown_waiting(wav_path, None)
             continue
-        if [st.st_size, st.st_mtime_ns] != list(identity) or time.time() - st.st_mtime > MIXDOWN_WAITING_DAYS * 86400:
+        if [st.st_size, st.st_mtime_ns] != list(identity[:2]) or time.time() - st.st_mtime > MIXDOWN_WAITING_DAYS * 86400:
             _set_mixdown_waiting(wav_path, None)  # a change is picked up by the watcher
             continue
+        if len(identity) > 2:
+            continue  # held back by the BWF check: waits for a re-export
         try:
             if wav_path.parent not in projects:
                 projects[wav_path.parent] = resolve_project(wav_path)
@@ -887,7 +971,23 @@ def handle_mixdown_wav(wav_path: Path, video_publisher=None):
         except ValueError:
             log(f"[mixdown] {wav_path.name} doesn't start with a cue number and title — not published")
             return
-        destination = publish_mixdown(wav_path, wav_bytes, proj, log, cue_names=fetch_cue_names(proj))
+        cue_names = fetch_cue_names(proj)
+        mode = load_bwf_mode()
+        if mode != "off":
+            scoring = local_dropbox_project(base_path) / "Scoring"
+            if review_folder(scoring, wav_path, cue_names) is not None:  # production versions aren't checked
+                verdict = evaluate_mixdown(wav_path.name, wav_bytes, rate=project_frame_rate(proj), mode=mode)
+                for line in verdict.log_lines:
+                    log(line)
+                if verdict.alert and _bwf_alerted.get(wav_path) != identity:
+                    _bwf_alerted[wav_path] = identity
+                    bwf_alert(proj, verdict.alert)
+                if not verdict.publish:
+                    _set_mixdown_waiting(wav_path, identity, f"bwf: {verdict.stamp.summary}")
+                    log(f"[mixdown] {wav_path.name} held back by the BWF check (bwf_check = block) — "
+                        f"re-export it with a correct stamp to publish")
+                    return
+        destination = publish_mixdown(wav_path, wav_bytes, proj, log, cue_names=cue_names)
         if destination is None:
             log(f"[mixdown] {wav_path.name} isn't named exactly like a DS Scoring cue or its Dropbox folder — "
                 f"treated as a production version, not published (rechecked every minute in case the cue is added)")
@@ -1332,7 +1432,8 @@ _mixdown_inflight = set()   # paths with an upload thread running
 _mixdown_dirty = set()      # in-flight paths that changed again; re-run when done
 _mixdown_uploaded = {}      # path -> (size, mtime_ns) last uploaded, avoids duplicate Prev Versions
 _mixdown_inflight_lock = threading.Lock()
-_mixdown_waiting = _load_mixdown_waiting()  # path -> [size, mtime_ns] of mixdowns skipped for their name
+_mixdown_waiting = _load_mixdown_waiting()  # path -> [size, mtime_ns(, bwf reason)] of skipped mixdowns
+_bwf_alerted = {}           # path -> (size, mtime_ns) last alerted, so one export alerts once
 
 def fetch_project_id_for_track(track_name):
     """Try to find project_id by matching track cue number against Supabase cues."""

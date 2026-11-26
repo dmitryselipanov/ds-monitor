@@ -82,6 +82,36 @@ waits until the export is really finished — unchanged, header sizes written,
 and no longer open in Cubase — and copies again if the file changes later. The
 log says why any WAV was not published. The original stays in `Mixdown`.
 
+### BWF timestamp check
+
+Before a review mix is published, `bwf_check.py` compares its Broadcast Wave
+stamp (bext TimeReference) with the timecode at the end of the filename, at the
+project's frame rate (exact 24000/1001 maths for 23.976). Export from bar 1 with
+**Insert Broadcast Wave Chunk** on and **Use this Timecode** off; at 48 kHz /
+23.976 one frame is 2,002 samples, so `03.14.54.19` must read 561,911,350.
+Results go to the log as `[bwf] PASS/WARN/FAIL` with the reason: no BWF chunk,
+stamped 00:00:00:00, not on a frame boundary (+N samples), or off by N samples /
+seconds / frames. A name without a timecode is a WARN. Production versions
+aren't checked.
+
+It also flags a mix that is effectively silent (peak below −90 dBFS, from the
+bext true-peak field when Cubase fills it, otherwise by scanning the samples).
+
+A FAIL or a silent mix shows as a Mac notification and a Telegram message from
+the DS Scoring bot (through the Worker's `/monitor-notify`, with
+`DS_MONITOR_SECRET`; the bot token stays in the Worker). `"bwf_check"` in
+`~/.ds-monitor-config.json` sets what a FAIL does, read for every export:
+
+- `"warn"` (default): publish anyway, log and alert
+- `"block"`: don't publish; the WAV goes on the waiting list with the reason
+  and a corrected re-export publishes normally
+- `"off"`: no check
+
+A silent mix or a missing timecode never blocks. The frame rate comes from
+DS Scoring (`frame_rate` in `/monitor-cues`) when the Worker sends it, else
+23.976 with a log line. Check files by hand:
+`python3 bwf_check.py "/path/to/Mixdown" [--fps 25]`.
+
 ## Cubase XML exports: slimmed automatically
 
 Export each cue version as a **full** track XML: select all tracks, then
