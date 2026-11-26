@@ -59,17 +59,19 @@ def read_tracks(xml_path: Path) -> list[dict]:
     return json.loads(m.group(1).replace("]]]]><![CDATA[>", "]]>"))
 
 
-# Template families, by the number their section groups start with (01a_WW MELODY DRY → 01).
-FAMILIES = {"01": "Woodwinds", "02": "Brass", "03": "Orchestral Percussion", "04": "Ethnic Percussion",
-            "05": "Harp", "06": "Piano", "07": "Strings", "08": "Choir", "09": "Orchestra",
-            "10": "Orchestra", "11": "Orchestra", "12": "Synths & Design", "13": "Band",
-            "14": "Ethnic & Misc", "15": "Sampling & Ext"}
-# Folder colours of the template's families (read by eye from a track-list screenshot,
-# 2026-11-26; tracks inside use shades of these). Families without one show no dot.
-COLOURS = {"Woodwinds": "#0BA3D9", "Brass": "#D4AE00", "Orchestral Percussion": "#5C4A30",
-           "Ethnic Percussion": "#5C4A30", "Harp": "#E0620F", "Piano": "#E0620F",
-           "Strings": "#3D7A12", "Choir": "#8E7CC3", "Synths & Design": "#5C3622",
-           "Sampling & Ext": "#5C3622", "Ethnic & Misc": "#0B80B2"}
+# Headings = the template's top-level track-list folders, by the number their section groups
+# start with (01a_WW MELODY DRY → 01). Families sharing a folder share a heading
+# (03 + 04 → PERC, 05 + 06 → HARP & PIANO, 12 + 15 → SYNTHETICS & DESIGN).
+FAMILIES = {"01": "Woodwinds", "02": "Brass", "03": "Percussion", "04": "Percussion",
+            "05": "Harp & Piano", "06": "Harp & Piano", "07": "Strings", "08": "Choir",
+            "09": "Orchestra", "10": "Orchestra", "11": "Orchestra", "12": "Synthetics & Design",
+            "13": "Band", "14": "Ethnic & Misc", "15": "Synthetics & Design"}
+# Folder colours (read by eye from a track-list screenshot, 2026-11-26; tracks inside use shades
+# of these), and the headings whose bright colour takes dark text (dark folder icons in Cubase).
+COLOURS = {"Woodwinds": "#0BA3D9", "Brass": "#D4AE00", "Percussion": "#5C4A30",
+           "Harp & Piano": "#E0620F", "Strings": "#3D7A12", "Choir": "#8E7CC3",
+           "Synthetics & Design": "#5C3622", "Ethnic & Misc": "#0B80B2"}
+DARK_TEXT = {"Woodwinds", "Brass", "Ethnic & Misc"}
 UTILITY = {"dx", "sfx", "temp", "video", "cue", "video marker", "music marker", "signature", "tempo"}
 
 

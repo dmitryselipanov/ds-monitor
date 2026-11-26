@@ -57,7 +57,14 @@ class SummarizeTests(unittest.TestCase):
         got = [(title, [r["name"] for r in rows]) for title, rows in sections(summarize(t))]
         self.assertEqual(got, [("Woodwinds", ["PRIM Flute"]),
                                ("Brass", ["SSB 2 Horns Longs", "Euphonium pad 1 Take 1"]),
-                               ("Synths & Design", ["Prophet Bass"])])      # Dx left out
+                               ("Synthetics & Design", ["Prophet Bass"])])      # Dx left out
+
+    def test_families_sharing_a_folder_share_a_heading(self):
+        t = [{"name": n, "g": g, "parts": [{"m": 0, "n": [[0, 1, 1, 0]]}]} for n, g in
+             [("SF Harp Main", "05a_HARP DRY"), ("SF Orchestral Grand", "06a_PIANO DRY"),
+              ("Serum Pulse", "12q_SYNTH ARPS HIGH DRY"), ("HALion 7", "15a_SAMPLING DRY")]]
+        self.assertEqual([(h, len(r)) for h, r in sections(summarize(t))],
+                         [("Harp & Piano", 2), ("Synthetics & Design", 2)])
 
     def test_detail(self):
         vln, zeb1, aud, zeb2 = summarize(TRACKS)
@@ -89,6 +96,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(rep["total"], 5)
         text = as_text(rep)
         self.assertIn("STRINGS", text)
+        self.assertIn("SYNTHETICS & DESIGN", text)
         self.assertTrue(text.rstrip().endswith("Zebra  (1 note)"))
         self.assertFalse(rep["stale"])
         self.assertIn("More than one track named Zebra", rep["note"])

@@ -13,7 +13,7 @@ from AppKit import (NSApp, NSButton, NSColor, NSFont, NSMakeRect, NSOpenPanel, N
                     NSPasteboard, NSScrollView, NSTextField, NSView, NSVisualEffectView)
 from Foundation import NSObject, NSURL
 
-from tracks_with_data import COLOURS, as_text, detail, report, sections
+from tracks_with_data import COLOURS, DARK_TEXT, as_text, detail, report, sections
 
 
 def _const(name, value):
@@ -49,8 +49,8 @@ NSFontWeightBold = _const("NSFontWeightBold", 0.4)
 WIDTH = 440
 PAD = 20            # left/right margin
 ROW = 24            # track row height
-HEAD_GAP = 16       # space above a section heading
-HEADING = 20        # section heading height
+HEAD_GAP = 14       # space above a section heading
+HEADING = 26        # section heading height (bar 22 + 4 below)
 TOP = 92            # title area (below the window's traffic lights)
 
 _open = []          # panels and their controllers: kept here so they aren't garbage-collected
@@ -155,30 +155,33 @@ def _list_view(items, w):
     for it, y in placed:
         if it[0] == "heading":
             _, title, n = it
-            x = PAD
             hexcol = COLOURS.get(title)
-            if hexcol:                        # the family's folder colour, as a small dot
-                r, g, b_ = (int(hexcol[i:i + 2], 16) / 255 for i in (1, 3, 5))
-                dot = NSView.alloc().initWithFrame_(NSMakeRect(PAD, y + 5, 9, 9))
-                dot.setWantsLayer_(True)
-                dot.layer().setCornerRadius_(4.5)
-                dot.layer().setBackgroundColor_(
-                    NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b_, 1.0).CGColor())
-                doc.addSubview_(dot)
-                x = PAD + 16
-            h = _text(title.upper(), NSMakeRect(x, y + 2, w - x - PAD - 40, 16),
-                      size=10.5, weight=NSFontWeightSemibold, color=secondary)
+            if hexcol:                        # the family's folder colour as a full-width bar
+                r_, g_, b_ = (int(hexcol[i:i + 2], 16) / 255 for i in (1, 3, 5))
+                bar = NSView.alloc().initWithFrame_(NSMakeRect(PAD - 6, y, w - 2 * PAD + 12, 22))
+                bar.setWantsLayer_(True)
+                bar.layer().setCornerRadius_(5)
+                bar.layer().setBackgroundColor_(
+                    NSColor.colorWithSRGBRed_green_blue_alpha_(r_, g_, b_, 1.0).CGColor())
+                bar.setAutoresizingMask_(NSViewWidthSizable)
+                doc.addSubview_(bar)
+                tc = (NSColor.colorWithSRGBRed_green_blue_alpha_(0.08, 0.08, 0.08, 1.0)
+                      if title in DARK_TEXT else NSColor.whiteColor())
+            else:                             # Muted (and families without a colour): plain
+                line = NSView.alloc().initWithFrame_(NSMakeRect(PAD, y + 21, w - 2 * PAD, 1))
+                line.setWantsLayer_(True)
+                line.layer().setBackgroundColor_(NSColor.separatorColor().CGColor())
+                line.setAutoresizingMask_(NSViewWidthSizable)
+                doc.addSubview_(line)
+                tc = secondary
+            h = _text(title.upper(), NSMakeRect(PAD + 2, y + 3, w - 2 * PAD - 44, 16),
+                      size=11, weight=NSFontWeightBold, color=tc)
             h.setAutoresizingMask_(NSViewWidthSizable)
-            c = _text(str(n), NSMakeRect(w - PAD - 40, y + 2, 40, 16), size=10.5,
-                      weight=NSFontWeightSemibold, color=tertiary, right=True)
+            c = _text(str(n), NSMakeRect(w - PAD - 42, y + 3, 40, 16), size=11,
+                      weight=NSFontWeightBold, color=tc, right=True)
             c.setAutoresizingMask_(NSViewMinXMargin)
             doc.addSubview_(h)
             doc.addSubview_(c)
-            line = NSView.alloc().initWithFrame_(NSMakeRect(PAD, y + HEADING - 1, w - 2 * PAD, 1))
-            line.setWantsLayer_(True)
-            line.layer().setBackgroundColor_(NSColor.separatorColor().CGColor())
-            line.setAutoresizingMask_(NSViewWidthSizable)
-            doc.addSubview_(line)
         else:
             _, r, muted = it
             dw = 130
