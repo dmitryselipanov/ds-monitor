@@ -101,7 +101,7 @@ def parse_wav(data: bytes) -> WavInfo:
             if size == 0xFFFFFFFF and ds64_data is not None:
                 size = ds64_data
             data_offset, data_size = body, min(size, len(data) - body)
-            break  # everything needed comes before the audio
+            # Keep going: some writers put iXML (or even bext) after the audio.
         pos = body + size + (size & 1)
     if fmt is None or len(fmt) < 16:
         raise ValueError("no fmt chunk")

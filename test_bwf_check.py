@@ -114,6 +114,15 @@ class StampTests(unittest.TestCase):
         self.assertEqual(result.status, "WARN")
         self.assertIn("no timecode in filename", result.detail)
 
+    def test_ixml_after_the_audio_is_found(self):
+        data = bytearray(bwf_wav(561_911_350, ixml=None))
+        data += chunk(b"iXML", IXML)
+        struct.pack_into("<I", data, 4, len(data) - 8)
+        self.assertIsNone(wav_header_problem(bytes(data)))
+        result = check_stamp("3m37 Help Us 03.14.54.19.wav", parse_wav(bytes(data)))
+        self.assertEqual(result.status, "PASS")
+        self.assertIn("iXML", result.detail)
+
     def test_rf64(self):
         data = bwf_wav(561_911_350, rf64=True)
         self.assertIsNone(wav_header_problem(data))
