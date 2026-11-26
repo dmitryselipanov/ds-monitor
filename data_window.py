@@ -202,10 +202,11 @@ def close_all():
         panel.close()
 
 
-def show(path: Path, activate: bool = True):
+def show(path: Path, activate: bool = True, rep: dict | None = None, visible: bool = True):
     """Open a floating window with the tracks that play in the cue at `path` (.cpr or .xml).
-    activate=False (opened by itself next to Cubase's import dialog): don't take the focus."""
-    rep = report(path)
+    activate=False (opened by itself next to Cubase's import dialog): don't take the focus.
+    rep: a report already built (off the main thread); visible=False: build it hidden."""
+    rep = rep or report(path)
     items = _layout(rep)
     note_h = (16 * sum(1 + len(l) // 66 for l in rep["note"].split("\n")) + 2) if rep["note"] else 0
     head_h = TOP + (note_h + 4 if note_h else 0)
@@ -293,6 +294,6 @@ def show(path: Path, activate: bool = True):
     if activate:
         NSApp.activateIgnoringOtherApps_(True)
         panel.makeKeyAndOrderFront_(None)
-    else:
+    elif visible:
         panel.orderFrontRegardless()
     return panel

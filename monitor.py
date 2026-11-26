@@ -1534,10 +1534,10 @@ class DSMonitorApp(rumps.App):
         log(f"[data] automatic panel {'on' if self._auto else 'off'}")
 
     def _watch_imports(self):
-        """Background: when Cubase's Import Options (track list) shows, open the panel for the cue
-        it's reading; when it closes, close the panel. AppKit work is handed to the main thread
-        at once (callAfter), not left for the next timer tick."""
+        """Background: follow Cubase's Import Tracks from Project (import_watch.Watcher) and hand
+        each event to the main thread at once (callAfter); the 0.5 s timer is a fallback."""
         import import_watch
+        from tracks_with_data import report
         import_watch.log = log
         w = import_watch.Watcher()
         log("[data] watching for Cubase's Import Tracks from Project")
@@ -1550,31 +1550,38 @@ class DSMonitorApp(rumps.App):
             if not self._auto:
                 continue
             try:
-                ev = w.poll()
+                evs = w.poll(lambda p: report(Path(p)))
             except Exception as e:
                 log(f"[data] import watch: {e}")
                 continue
-            if ev:
-                self._import_events.append(ev)
+            if evs:
+                self._import_events.extend(evs)
                 if callAfter:
                     callAfter(self.handle_imports, None)
 
     @rumps.timer(0.5)
     def handle_imports(self, _):
-        """Main thread: open/close the automatic panel (called right away via callAfter; the
-        timer is a fallback)."""
+        """Main thread: open, hide/show again, or close the automatic panel."""
         while self._import_events:
-            kind, path = self._import_events.pop(0)
+            ev = self._import_events.pop(0)
             try:
                 import data_window
+                if ev[0] == "visible":
+                    if self._auto_panel is not None:
+                        if ev[1]:
+                            self._auto_panel.orderFrontRegardless()
+                        else:
+                            self._auto_panel.orderOut_(None)
+                    continue
                 if self._auto_panel is not None:          # only the panel opened by itself
                     self._auto_panel.close()
                     self._auto_panel = None
-                if kind == "show":
+                if ev[0] == "show":
+                    _, path, rep, visible = ev
                     log(f"[data] Import Tracks from Project: {path}")
-                    p = self._auto_panel = data_window.show(Path(path), activate=False)
+                    p = self._auto_panel = data_window.show(Path(path), activate=False, rep=rep, visible=visible)
                     f = p.frame()
-                    log(f"[data] panel shown: visible={bool(p.isVisible())} on active space={bool(p.isOnActiveSpace())} "
+                    log(f"[data] panel shown: visible={bool(p.isVisible())} "
                         f"at x={f.origin.x:.0f} y={f.origin.y:.0f} w={f.size.width:.0f} h={f.size.height:.0f}")
             except Exception as e:
                 log(f"[data] automatic panel failed: {e}")
