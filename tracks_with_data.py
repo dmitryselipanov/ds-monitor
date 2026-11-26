@@ -64,6 +64,12 @@ FAMILIES = {"01": "Woodwinds", "02": "Brass", "03": "Orchestral Percussion", "04
             "05": "Harp", "06": "Piano", "07": "Strings", "08": "Choir", "09": "Orchestra",
             "10": "Orchestra", "11": "Orchestra", "12": "Synths & Design", "13": "Band",
             "14": "Ethnic & Misc", "15": "Sampling & Ext"}
+# Folder colours of the template's families (read by eye from a track-list screenshot,
+# 2026-11-26; tracks inside use shades of these). Families without one show no dot.
+COLOURS = {"Woodwinds": "#0BA3D9", "Brass": "#D4AE00", "Orchestral Percussion": "#5C4A30",
+           "Ethnic Percussion": "#5C4A30", "Harp": "#E0620F", "Piano": "#E0620F",
+           "Strings": "#3D7A12", "Choir": "#8E7CC3", "Synths & Design": "#5C3622",
+           "Sampling & Ext": "#5C3622", "Ethnic & Misc": "#0B80B2"}
 UTILITY = {"dx", "sfx", "temp", "video", "cue", "video marker", "music marker", "signature", "tempo"}
 
 

@@ -13,7 +13,7 @@ from AppKit import (NSApp, NSButton, NSColor, NSFont, NSMakeRect, NSOpenPanel, N
                     NSPasteboard, NSScrollView, NSTextField, NSView, NSVisualEffectView)
 from Foundation import NSObject, NSURL
 
-from tracks_with_data import as_text, detail, report, sections
+from tracks_with_data import COLOURS, as_text, detail, report, sections
 
 
 def _const(name, value):
@@ -155,7 +155,18 @@ def _list_view(items, w):
     for it, y in placed:
         if it[0] == "heading":
             _, title, n = it
-            h = _text(title.upper(), NSMakeRect(PAD, y + 2, w - 2 * PAD - 40, 16),
+            x = PAD
+            hexcol = COLOURS.get(title)
+            if hexcol:                        # the family's folder colour, as a small dot
+                r, g, b_ = (int(hexcol[i:i + 2], 16) / 255 for i in (1, 3, 5))
+                dot = NSView.alloc().initWithFrame_(NSMakeRect(PAD, y + 5, 9, 9))
+                dot.setWantsLayer_(True)
+                dot.layer().setCornerRadius_(4.5)
+                dot.layer().setBackgroundColor_(
+                    NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b_, 1.0).CGColor())
+                doc.addSubview_(dot)
+                x = PAD + 16
+            h = _text(title.upper(), NSMakeRect(x, y + 2, w - x - PAD - 40, 16),
                       size=10.5, weight=NSFontWeightSemibold, color=secondary)
             h.setAutoresizingMask_(NSViewWidthSizable)
             c = _text(str(n), NSMakeRect(w - PAD - 40, y + 2, 40, 16), size=10.5,
