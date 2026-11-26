@@ -1495,7 +1495,8 @@ class DSMonitorApp(rumps.App):
         super().__init__("♩", quit_button=None)
         self.ai_item = rumps.MenuItem("○ AI Analysis: OFF", callback=self.toggle_ai)
         self.routing_item = rumps.MenuItem("Check Routing (save first)", callback=self.check_routing)
-        self.menu = ["Idle — waiting for save", None, self.routing_item, self.ai_item, None, rumps.MenuItem("Quit DS//Monitor", callback=rumps.quit_application)]
+        self.data_item = rumps.MenuItem("Tracks with Data…", callback=self.tracks_with_data)
+        self.menu = ["Idle — waiting for save", None, self.routing_item, self.data_item, self.ai_item, None, rumps.MenuItem("Quit DS//Monitor", callback=rumps.quit_application)]
         self._last_status = "idle"
         self._routing_version = 0
 
@@ -1506,6 +1507,21 @@ class DSMonitorApp(rumps.App):
         routing_state["alert"] = True          # show the result in a window when it's done
         self.update_menu()
         threading.Thread(target=check_routing_now, daemon=True).start()
+
+    def tracks_with_data(self, _):
+        """Pick a cue (.cpr or its XML export) and float a list of its tracks that hold MIDI or
+        audio above Cubase, to tick off in Import Tracks from Project."""
+        try:
+            import data_window
+            last = newest_project()
+            start = last.parent.parent if last else None      # the film's folder: its cues sit inside
+            path = data_window.choose_project(start)
+            if path:
+                data_window.show(path)
+                log(f"[data] tracks with data: {path}")
+        except Exception as e:
+            log(f"[data] failed: {e}")
+            rumps.alert("Tracks with Data", f"Couldn't read the tracks: {e}")
 
     def show_routing_result(self):
         """An open menu doesn't redraw, so the result also pops up in a small window."""
@@ -1586,6 +1602,7 @@ class DSMonitorApp(rumps.App):
 
         items.append(None)
         items.extend(self.routing_items())
+        items.append(self.data_item)
         items.append(self.ai_item)
         items.append(None)
         items.append(rumps.MenuItem("Quit DS//Monitor", callback=rumps.quit_application))

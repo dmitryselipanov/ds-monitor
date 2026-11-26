@@ -1,5 +1,22 @@
 # DS//Monitor
 
+## Tracks with Data (importing tracks from another cue)
+
+Cubase's **Import Tracks from Project** dialog lists all ~1,500 template tracks and
+doesn't show which ones hold anything. Menu bar → **Tracks with Data…** → pick the
+cue you're importing *from* (its `.cpr`, or its `.xml` export). A small window floats
+above Cubase and lists only that cue's tracks with MIDI parts or audio regions, in
+track-list order, with what each holds and its output group (to tell same-named tracks
+like `Zebra` apart). Tick them off as you select them in the import dialog; **Copy
+list** puts the list on the clipboard. Nothing is loaded in Cubase.
+
+The list comes from the cue's XML export (select all tracks → File › Export ›
+Selected Tracks, next to the `.cpr` with its name), which DS Monitor already slims.
+Cubase never exports disabled tracks, so everything listed was enabled at that
+export. If the project was saved after the export, the window says so in orange:
+export again for an up-to-date list. Command line: `python3 tracks_with_data.py
+"/path/to/cue.cpr"`.
+
 ## Video previews to Dropbox
 
 In Cubase's **Export Video** dialog, set **File Path** to a folder named
