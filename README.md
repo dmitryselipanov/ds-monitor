@@ -10,6 +10,13 @@ headings (Woodwinds, Strings, …) in track-list order, with how many notes or a
 regions each has. Tracks whose parts are all muted are listed separately at the end.
 **Copy** puts the list on the clipboard. Nothing is loaded in Cubase.
 
+It also opens by itself: when Cubase's Import Tracks from Project shows its track list
+(the "Import Options" window), DS Monitor reads which `.cpr` Cubase has open (the cue
+picked) and shows its panel, without taking the focus; it closes with the dialog. Turn
+this off with the menu's **Tracks with Data on Import Tracks**. It needs DS Monitor's
+Python allowed in System Settings › Privacy & Security › Accessibility (to see Cubase's
+window titles); it only looks while Cubase is in front.
+
 The list comes from the cue's XML export (select all tracks → File › Export ›
 Selected Tracks, next to the `.cpr` with its name); full, slim and older exports are
 all read, without changing them. Cubase never exports disabled tracks, so everything

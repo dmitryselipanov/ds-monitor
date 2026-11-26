@@ -178,8 +178,14 @@ def _list_view(items, w):
     return doc
 
 
-def show(path: Path):
-    """Open a floating window with the tracks that play in the cue at `path` (.cpr or .xml)."""
+def close_all():
+    for panel, _ in list(_open):
+        panel.close()
+
+
+def show(path: Path, activate: bool = True):
+    """Open a floating window with the tracks that play in the cue at `path` (.cpr or .xml).
+    activate=False (opened by itself next to Cubase's import dialog): don't take the focus."""
     rep = report(path)
     items = _layout(rep)
     list_h = sum(ROW if i[0] == "row" else HEADING + HEAD_GAP for i in items) + 24
@@ -199,6 +205,7 @@ def show(path: Path):
     panel.setCollectionBehavior_(NSWindowCollectionBehaviorCanJoinAllSpaces
                                  | NSWindowCollectionBehaviorFullScreenAuxiliary)
     panel.setMinSize_((320, 200))
+    panel.setFrameAutosaveName_("DSTracksWithData")    # opens where it was last left
     ctl = _Controller.alloc().initWithText_(as_text(rep))
     panel.setDelegate_(ctl)
 
@@ -253,6 +260,9 @@ def show(path: Path):
     bg.addSubview_(scroll)
 
     _open.append((panel, ctl))
-    NSApp.activateIgnoringOtherApps_(True)
-    panel.makeKeyAndOrderFront_(None)
+    if activate:
+        NSApp.activateIgnoringOtherApps_(True)
+        panel.makeKeyAndOrderFront_(None)
+    else:
+        panel.orderFrontRegardless()
     return panel

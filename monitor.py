@@ -1496,7 +1496,12 @@ class DSMonitorApp(rumps.App):
         self.ai_item = rumps.MenuItem("○ AI Analysis: OFF", callback=self.toggle_ai)
         self.routing_item = rumps.MenuItem("Check Routing (save first)", callback=self.check_routing)
         self.data_item = rumps.MenuItem("Tracks with Data…", callback=self.tracks_with_data)
-        self.menu = ["Idle — waiting for save", None, self.routing_item, self.data_item, self.ai_item, None, rumps.MenuItem("Quit DS//Monitor", callback=rumps.quit_application)]
+        self.auto_item = rumps.MenuItem("✓ Tracks with Data on Import Tracks", callback=self.toggle_auto)
+        self._auto = True
+        self._import_events = []
+        self._auto_panel = None
+        threading.Thread(target=self._watch_imports, daemon=True).start()
+        self.menu = ["Idle — waiting for save", None, self.routing_item, self.data_item, self.auto_item, self.ai_item, None, rumps.MenuItem("Quit DS//Monitor", callback=rumps.quit_application)]
         self._last_status = "idle"
         self._routing_version = 0
 
@@ -1522,6 +1527,43 @@ class DSMonitorApp(rumps.App):
         except Exception as e:
             log(f"[data] failed: {e}")
             rumps.alert("Tracks with Data", f"Couldn't read the tracks: {e}")
+
+    def toggle_auto(self, _):
+        self._auto = not self._auto
+        self.auto_item.title = ("✓ " if self._auto else "    ") + "Tracks with Data on Import Tracks"
+        log(f"[data] automatic panel {'on' if self._auto else 'off'}")
+
+    def _watch_imports(self):
+        """Background: when Cubase's Import Options (track list) shows, queue the cue it's
+        reading; when it closes, queue a close. The panel itself is opened on the main thread."""
+        from import_watch import Watcher
+        w = Watcher()
+        while True:
+            time.sleep(1)
+            if not self._auto:
+                continue
+            try:
+                ev = w.poll()
+            except Exception as e:
+                log(f"[data] import watch: {e}")
+                continue
+            if ev:
+                self._import_events.append(ev)
+
+    @rumps.timer(0.5)
+    def handle_imports(self, _):
+        while self._import_events:
+            kind, path = self._import_events.pop(0)
+            try:
+                import data_window
+                if self._auto_panel is not None:          # only the panel opened by itself
+                    self._auto_panel.close()
+                    self._auto_panel = None
+                if kind == "show":
+                    log(f"[data] Import Tracks from Project: {path}")
+                    self._auto_panel = data_window.show(Path(path), activate=False)
+            except Exception as e:
+                log(f"[data] automatic panel failed: {e}")
 
     def show_routing_result(self):
         """An open menu doesn't redraw, so the result also pops up in a small window."""
@@ -1603,6 +1645,7 @@ class DSMonitorApp(rumps.App):
         items.append(None)
         items.extend(self.routing_items())
         items.append(self.data_item)
+        items.append(self.auto_item)
         items.append(self.ai_item)
         items.append(None)
         items.append(rumps.MenuItem("Quit DS//Monitor", callback=rumps.quit_application))
