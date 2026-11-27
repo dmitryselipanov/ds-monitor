@@ -18,7 +18,7 @@ from data_window import (NSBackingStoreBuffered, NSControlSizeSmall, NSFloatingW
                          NSWindowCollectionBehaviorFullScreenAuxiliary, NSWindowStyleMaskClosable,
                          NSWindowStyleMaskFullSizeContentView, NSWindowStyleMaskResizable,
                          NSWindowStyleMaskTitled, NSWindowTitleHidden, _Flipped, _text)
-from tracks_with_data import COLOURS, family
+from tracks_with_data import COLOURS, DARK_TEXT, family
 
 WIDTH = 480
 PAD = 20
@@ -84,14 +84,24 @@ def _place(groups):
     return placed, y + 16
 
 
-def _dot(hexcol, x, y):
+def _pill(doc, label, hexcol, dark_text, x, y, max_w):
+    """The group name on a rounded bar in its family's folder colour, like the section bars
+    of Tracks with Data. Sized to the name, at most max_w wide."""
     r_, g_, b_ = (int(hexcol[i:i + 2], 16) / 255 for i in (1, 3, 5))
-    d = NSView.alloc().initWithFrame_(NSMakeRect(x, y, 8, 8))
-    d.setWantsLayer_(True)
-    d.layer().setCornerRadius_(4)
-    d.layer().setBackgroundColor_(NSColor.colorWithSRGBRed_green_blue_alpha_(r_, g_, b_, 1.0).CGColor())
-    d.setAutoresizingMask_(NSViewMinXMargin)
-    return d
+    tc = (NSColor.colorWithSRGBRed_green_blue_alpha_(0.08, 0.08, 0.08, 1.0) if dark_text
+          else NSColor.whiteColor())
+    t = _text(label, NSMakeRect(0, 0, max_w, 16), size=11, weight=NSFontWeightBold, color=tc)
+    t.sizeToFit()
+    tw = min(t.frame().size.width, max_w - 14)
+    bar = NSView.alloc().initWithFrame_(NSMakeRect(x, y, tw + 14, 20))
+    bar.setWantsLayer_(True)
+    bar.layer().setCornerRadius_(5)
+    bar.layer().setBackgroundColor_(NSColor.colorWithSRGBRed_green_blue_alpha_(r_, g_, b_, 1.0).CGColor())
+    bar.setAutoresizingMask_(NSViewMinXMargin)
+    t.setFrame_(NSMakeRect(x + 7, y + 2, tw, 16))
+    t.setAutoresizingMask_(NSViewMinXMargin)
+    doc.addSubview_(bar)
+    doc.addSubview_(t)
 
 
 def _list_view(groups, w):
@@ -126,19 +136,19 @@ def _list_view(groups, w):
             name.setAutoresizingMask_(NSViewWidthSizable)
             doc.addSubview_(name)
             dest = target(r)
-            hexcol = COLOURS.get(family(r["groups"][0])) if r["groups"] else None
+            fam = family(r["groups"][0]) if r["groups"] else None
+            hexcol = COLOURS.get(fam)
             tx = w - PAD - TARGET_W
             arrow = _text("→", NSMakeRect(tx - 4, y + 4, 16, 16), size=12, color=NSColor.tertiaryLabelColor())
             arrow.setAutoresizingMask_(NSViewMinXMargin)
             doc.addSubview_(arrow)
-            if hexcol:                        # the destination family's folder colour
-                doc.addSubview_(_dot(hexcol, tx + 16, y + 9))
-            info = _text(dest, NSMakeRect(tx + (28 if hexcol else 16), y + 5,
-                                          TARGET_W - (28 if hexcol else 16), 16), size=11,
-                         color=secondary)
-            info.setFont_(NSFont.monospacedSystemFontOfSize_weight_(11, 0))
-            info.setAutoresizingMask_(NSViewMinXMargin)
-            doc.addSubview_(info)
+            if hexcol and r["kind"] != "same":    # one group: full colour bar, like a folder
+                _pill(doc, dest, hexcol, fam in DARK_TEXT, tx + 16, y + 2, TARGET_W - 16)
+            else:                                 # Stereo Out, several groups, Band: plain
+                info = _text(dest, NSMakeRect(tx + 16, y + 5, TARGET_W - 16, 16), size=11,
+                             color=secondary)
+                info.setAutoresizingMask_(NSViewMinXMargin)
+                doc.addSubview_(info)
     return doc
 
 
