@@ -342,6 +342,46 @@ def short(issue: dict) -> str:
     return f'{issue["track"]} → Stereo Out (no group)'
 
 
+# The result window's sections, most common slip first: heading, then what to do about it.
+KINDS = [
+    ("family", "Into a family bus", "Skips the section. Route each to its section's DRY group "
+               "(band: 13a KIT … 13g VOX BGV)."),
+    ("none", "No group", "Goes straight to Stereo Out. Route each to its section's DRY group."),
+    ("bus", "Into a SUM or reverb bus", "Not a section group. Usually it belongs in that section's DRY group."),
+    ("same", "Same name, different groups", "Tracks sharing a name output to different groups. "
+             "Rename one or fix its output."),
+]
+
+
+def target(issue: dict) -> str:
+    """Where the track goes now, for the window's right-hand column."""
+    if issue["kind"] == "none":
+        return "Stereo Out"
+    return " / ".join(issue["groups"])
+
+
+def grouped(issues: list[dict]) -> list[tuple[str, str, str, list[dict]]]:
+    """(kind, heading, hint, issues) for each kind present, in KINDS order."""
+    out = []
+    for kind, heading, hint in KINDS:
+        rows = [i for i in issues if i["kind"] == kind]
+        if rows:
+            out.append((kind, heading, hint, rows))
+    return out
+
+
+def as_text(project: str, issues: list[dict], note: str = "") -> str:
+    """The result as plain text, for the window's Copy button."""
+    n = len(issues)
+    lines = [f"{project}: {n} routing issue{'s' if n != 1 else ''}" if n else f"{project}: routing OK"]
+    for _, heading, hint, rows in grouped(issues):
+        lines += ["", f"{heading} ({len(rows)}): {hint}"]
+        lines += [f"  {i['track']}  →  {target(i)}" for i in rows]
+    if note:
+        lines += ["", note]
+    return "\n".join(lines)
+
+
 def find_project(xml_path: Path) -> Path | None:
     """The .cpr an XML export belongs to: same name, else the newest .cpr in its folder
     (Cubase's numbered backups "name-01.cpr" are skipped)."""
