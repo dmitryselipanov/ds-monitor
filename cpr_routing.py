@@ -150,6 +150,24 @@ def track_routes(b: bytes) -> dict[str, list]:
     return out
 
 
+def resolve_group(g, routes: dict, seen: tuple = ()):
+    """The section group a track's output ends up in: `g` itself if it's numbered
+    (02c_BRS MID LONGS DRY), else followed through the outputs of un-numbered groups the
+    track feeds first (3m37: Euphonium tracks → "Euphonium bus" → 02c_BRS MID LONGS DRY).
+    None if the chain never reaches a numbered group (or loops)."""
+    if not g:
+        return None
+    if g[:2].isdigit():
+        return g
+    if g in seen or len(seen) > 8:
+        return None
+    for nxt in routes.get(g, []):
+        r = resolve_group(nxt, routes, seen + (g,))
+        if r:
+            return r
+    return None
+
+
 def output_groups(path: Path) -> dict[str, str]:
     return output_routing(path)[0]
 
@@ -162,7 +180,11 @@ def output_routing(path: Path) -> tuple[dict[str, str], dict[str, list[str]]]:
         return {}, {}
     result, every = {}, {}
     for name, outs in routes.items():
-        gs = [g for g in outs if g and g[:2].isdigit()]
+        gs = []
+        for g in outs:
+            r = resolve_group(g, routes)
+            if r and r not in gs:
+                gs.append(r)
         if not gs:
             continue
         every[name] = gs

@@ -148,6 +148,20 @@ class ReportTests(unittest.TestCase):
         (self.dir / "a.xml").write_text("<tt><body/></tt>")
         self.assertIsNone(report(cpr)["export"])
 
+    def test_missing_groups_looked_up_in_the_cpr(self):
+        from unittest import mock
+        cpr = self.dir / "3m37 Help Us.cpr"
+        cpr.write_bytes(b"x")
+        write_slim(self.dir / "3m37 Help Us.xml", [
+            {"name": "PRIM Sax 1", "g": "01b_WW HIGH LONGS DRY", "parts": [{"m": 0, "n": [[0, 1, 1, 0]]}]},
+            {"name": "Euphonium pad 1 Take 1", "parts": [{"m": 0, "a": 1, "n": []}]}])
+        old = time.time() - 100
+        os.utime(cpr, (old, old))
+        with mock.patch("cpr_routing.output_groups", return_value={"Euphonium pad 1 Take 1": "02c_BRS MID LONGS DRY"}):
+            rep = report(cpr)
+        self.assertEqual([(h, [r["name"] for r in rows]) for h, rows in sections(rep["rows"])],
+                         [("Woodwinds", ["PRIM Sax 1"]), ("Brass", ["Euphonium pad 1 Take 1"])])
+
     def test_xml_picked_directly(self):
         x = self.dir / "a.xml"
         write_slim(x)

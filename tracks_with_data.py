@@ -133,6 +133,25 @@ def detail(r: dict) -> str:
     return " + ".join(what)
 
 
+def _fill_groups(tracks: list[dict], path: Path, export: Path):
+    """Exports made before groups were followed through un-numbered buses (Euphonium tracks →
+    "Euphonium bus" → 02c) have no group for such tracks, so they'd land under the heading
+    above. Look those up in the cue's .cpr (a second or two for a large project)."""
+    missing = [t for t in tracks if t.get("parts") and not t.get("g")
+               and (t.get("name") or "").strip().lower() not in UTILITY]
+    if not missing:
+        return
+    try:
+        from cpr_routing import find_project, output_groups
+        cpr = path if path.suffix.lower() == ".cpr" else find_project(export)
+        groups = output_groups(cpr) if cpr and cpr.exists() else {}
+    except Exception:
+        return
+    for t in missing:
+        if groups.get(t.get("name")):
+            t["g"] = groups[t["name"]]
+
+
 def report(path: Path) -> dict:
     """Everything the window shows for the picked .cpr or .xml:
     {project, export (Path | None), rows (playing), muted (every part muted), total (tracks in
@@ -146,6 +165,7 @@ def report(path: Path) -> dict:
                        "File › Export › Selected Tracks, saved next to the .cpr with its name.")
         return out
     tracks = read_tracks(export)
+    _fill_groups(tracks, path, export)
     rows = summarize(tracks)
     out["rows"] = [r for r in rows if not r["muted"]]
     out["muted"] = [r for r in rows if r["muted"]]

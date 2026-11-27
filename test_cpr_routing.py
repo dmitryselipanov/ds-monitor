@@ -279,5 +279,18 @@ class TestResultWindowText(unittest.TestCase):
         self.assertEqual(cr.as_text("X", []), "X: routing OK")
 
 
+class ResolveGroupTests(unittest.TestCase):
+    def test_follows_unnumbered_groups(self):
+        from cpr_routing import resolve_group
+        routes = {"Euphonium bus": ["02c_BRS MID LONGS DRY"], "Loop A": ["Loop B"], "Loop B": ["Loop A"],
+                  "Sub bus": ["Euphonium bus"]}
+        self.assertEqual(resolve_group("02c_BRS MID LONGS DRY", routes), "02c_BRS MID LONGS DRY")
+        self.assertEqual(resolve_group("Euphonium bus", routes), "02c_BRS MID LONGS DRY")
+        self.assertEqual(resolve_group("Sub bus", routes), "02c_BRS MID LONGS DRY")
+        self.assertIsNone(resolve_group("Loop A", routes))
+        self.assertIsNone(resolve_group("Unknown", routes))
+        self.assertIsNone(resolve_group(None, routes))
+
+
 if __name__ == "__main__":
     unittest.main()
