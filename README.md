@@ -24,6 +24,17 @@ listed was enabled at that export. If the project was saved after the export, th
 window says so in orange: export again for an up-to-date list. Command line:
 `python3 tracks_with_data.py "/path/to/cue.cpr"`.
 
+## First save → Writing
+
+Saving a cue's project in Cubase (`1m09 Behind The Glass.cpr`, or any `.cpr` inside a
+`1m09` folder) moves that cue from **Spotting** to **Writing** in DS Scoring, with a Mac
+notification. Only cues still at Spotting (or with no stage) move. A cue you've set to
+anything else is never changed, and the stage never goes backwards. In a series, keep cues under
+`EP01`-style folders: cue numbers repeat across episodes, and a number shared by several cues
+with no episode folder is left alone (the log says so). Cubase backups (`-01.cpr`) and Auto Saves don't
+count. It goes through the Worker's `/monitor-cue-saved` with `DS_MONITOR_SECRET`, the same
+secret the mixdown publisher uses, so nothing new needs setting up.
+
 ## Video previews to Dropbox
 
 In Cubase's **Export Video** dialog, set **File Path** to a folder named
