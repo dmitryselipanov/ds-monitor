@@ -32,9 +32,9 @@ TARGET_W = 190      # right-hand column: where the track goes now
 _open = []          # panels and their controllers, kept so they aren't garbage-collected
 
 
-class _Controller(NSObject):
+class _RoutingController(NSObject):
     def initWithText_recheck_(self, text, recheck):
-        self = objc.super(_Controller, self).init()
+        self = objc.super(_RoutingController, self).init()
         if self is None:
             return None
         self.text, self.recheck = text, recheck
@@ -150,7 +150,7 @@ def show(project: str, issues: list[dict], note: str = "", secs: float = 0.0, re
                                  | NSWindowCollectionBehaviorFullScreenAuxiliary)
     panel.setMinSize_((360, 180))
     panel.setFrameAutosaveName_("DSCheckRouting")
-    ctl = _Controller.alloc().initWithText_recheck_(as_text(project, issues, note), recheck)
+    ctl = _RoutingController.alloc().initWithText_recheck_(as_text(project, issues, note), recheck)
     panel.setDelegate_(ctl)
 
     screen = panel.screen() or NSScreen.mainScreen()
