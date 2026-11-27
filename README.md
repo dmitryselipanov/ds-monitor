@@ -127,6 +127,12 @@ the DS Scoring bot (through the Worker's `/monitor-notify`, with
 
 A silent mix or a missing timecode never blocks.
 
+Once an export has failed (or was silent), the next export of the same cue that
+passes and publishes sends one confirmation ("✅ 3m37 Help Us: BWF stamp OK now
+(03:14:54:19), published"), even as a new version. Other passing exports stay
+quiet. Open alerts are kept in `~/Library/Caches/ds-monitor/mixdown-bwf-alerts.json`
+for 14 days.
+
 The frame rate is automatic: Cubase writes the project's rate into each
 export's iXML chunk (keep **Insert iXML Chunk** on), so the check uses the
 rate of the project the file came from. Exports without iXML fall back to the
