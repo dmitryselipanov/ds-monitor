@@ -503,6 +503,86 @@ _NO_CPR_DIRS = {"audio", "edits", "images", "mixdown", "video exports", "auto sa
                 "track pictures", "fades", "presets", "stems", "bounces", "video", "renders"}
 
 
+# ── First save → Writing ─────────────────────────────────────────────────────
+# A saved cue .cpr ("1m09 Behind The Glass.cpr", or any .cpr in a "1m09" folder) is reported to
+# the Worker's /monitor-cue-saved, which moves that cue from Spotting to Writing in DS Scoring.
+# The Worker never moves a cue that is past Spotting, so later saves are no-ops; once a cue is
+# known to be past Spotting it isn't reported again until DS Monitor restarts.
+MONITOR_CUE_SAVED_URL = "https://ds-note-worker.drumadima.workers.dev/monitor-cue-saved"
+CPR_CUE_NUMBER = re.compile(r"^(\d{1,3}m(?:\d{1,3}[a-z]?|[a-z]))(?=$|[\s_.-])", re.IGNORECASE)
+EPISODE_FOLDER = re.compile(r"^EP\s*0*(\d{1,3})$", re.IGNORECASE)
+_cue_saved_done = set()     # (project id, cue, episode) already at Writing or later
+_cue_saved_logged = set()   # misses logged once per run
+
+
+def cue_number_for_cpr(path: Path):
+    """The cue number a .cpr belongs to (lower case), from its name, else its folder's name."""
+    for name in (path.stem, path.parent.name):
+        m = CPR_CUE_NUMBER.match(name.strip())
+        if m:
+            return m.group(1).lower()
+    return None
+
+
+def episode_for_path(path: Path):
+    """The episode number from an EPxx folder in the path, or None."""
+    for part in reversed(path.parts[:-1]):
+        m = EPISODE_FOLDER.match(part.strip())
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def report_cue_saved(path: Path):
+    """Tell DS Scoring a cue's project was saved. Returns the Worker's answer, or None."""
+    if re.search(r"-\d{2}$", path.stem) or any(p.lower() in _NO_CPR_DIRS for p in path.parts[:-1]):
+        return None
+    cue = cue_number_for_cpr(path)
+    if not cue:
+        return None
+    secret = os.environ.get("DS_MONITOR_SECRET", "").strip()
+    if not secret:
+        if "secret" not in _cue_saved_logged:
+            _cue_saved_logged.add("secret")
+            log("[writing] DS_MONITOR_SECRET not set — cue stages aren't updated from saves")
+        return None
+    project = resolve_project(path)
+    if not project or not project.get("id"):
+        return None
+    episode = episode_for_path(path)
+    key = (project["id"], cue, episode)
+    if key in _cue_saved_done:
+        return None
+    body = {"project_id": project["id"], "cue_number": cue}
+    if episode is not None:
+        body["episode"] = episode
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            MONITOR_CUE_SAVED_URL, data=json.dumps(body).encode(), method="POST",
+            headers={"Authorization": f"Bearer {secret}", "Content-Type": "application/json",
+                     "User-Agent": "ds-monitor"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            result = json.loads(r.read() or b"{}")
+    except Exception as e:
+        log(f"[writing] {path.name}: couldn't reach DS Scoring ({e})")
+        return None
+    title = project.get("title") or "DS Scoring"
+    if result.get("changed"):
+        _cue_saved_done.add(key)
+        name = f"{result.get('cue_number') or cue} {result.get('title') or ''}".strip()
+        log(f"[writing] {title}: {name} → Writing (first save of {path.name})")
+        notify("DS Monitor", title, f"{name} → Writing")
+    elif result.get("reason") == "past spotting":
+        _cue_saved_done.add(key)
+    elif key not in _cue_saved_logged:
+        _cue_saved_logged.add(key)
+        why = {"no cue": "no such cue in DS Scoring",
+               "ambiguous": "several cues share this number; put the .cpr under an EPxx folder"}
+        log(f"[writing] {path.name}: stage not changed — {why.get(result.get('reason'), result.get('error') or result)}")
+    return result
+
+
 def notify(title: str, subtitle: str, body: str):
     try:
         import subprocess
@@ -1512,6 +1592,7 @@ def watch_loop():
                 if not re.search(r"-\d{2}$", path.stem):
                     remember_saved_project(path)
                     if path not in seen or seen[path] != mtime:
+                        threading.Thread(target=report_cue_saved, args=(path,), daemon=True).start()
                         if path in seen:
                             threading.Thread(target=run_analysis, args=(path,), daemon=True).start()
                         seen[path] = mtime
