@@ -46,7 +46,7 @@ from watchdog.events import FileSystemEventHandler
 from wav_check import read_finished_wav
 from video_publisher import VideoPublisher, cue_from_filename
 from mixdown_publisher import publish_mixdown, review_folder
-from bwf_check import DEFAULT_RATE, MODES as BWF_MODES, evaluate_mixdown, normalize_rate
+from bwf_check import DEFAULT_RATE, MODES as BWF_MODES, TC_RE, evaluate_mixdown, normalize_rate
 from video_publisher import local_dropbox_project
 
 try:
@@ -964,6 +964,55 @@ def bwf_alert(project, text):
     send_telegram(f"\U0001F3BC {title}\n{text}")
 
 
+# Open BWF / silence alerts per cue, so the export that fixes one says so. Keyed by the
+# Mixdown folder and the cue name without version or timecode: a V1.2 can fix a V1.1.
+# Kept on disk so a restart between the bad export and the fix doesn't lose it.
+MIXDOWN_BWF_ALERTS_PATH = Path.home() / "Library" / "Caches" / "ds-monitor" / "mixdown-bwf-alerts.json"
+BWF_ALERT_DAYS = 14
+
+
+def _bwf_alert_key(wav_path):
+    return f"{wav_path.parent}|{cue_from_filename(wav_path)[1].casefold()}"
+
+
+def _load_bwf_alerts():
+    try:
+        data = json.loads(MIXDOWN_BWF_ALERTS_PATH.read_text())
+        return {k: v for k, v in data.items() if time.time() - v.get("at", 0) < BWF_ALERT_DAYS * 86400}
+    except Exception:
+        return {}
+
+
+def _save_bwf_alerts():
+    try:
+        MIXDOWN_BWF_ALERTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        MIXDOWN_BWF_ALERTS_PATH.write_text(json.dumps(_bwf_open_alerts))
+    except Exception as e:
+        log(f"[bwf] couldn't save the list of open alerts: {e}")
+
+
+def bwf_problem_kinds(verdict):
+    """What a re-export can fix: a failing stamp, a silent mix (not a frame-rate mismatch)."""
+    kinds = []
+    if verdict.stamp is not None and verdict.stamp.status == "FAIL":
+        kinds.append("stamp")
+    if verdict.silence:
+        kinds.append("silent")
+    return kinds
+
+
+def bwf_fixed_message(wav_path, kinds, verdict):
+    """"✓ 3m37 Help Us V1.2: BWF stamp OK now (03:14:54:19), published"."""
+    stem = TC_RE.sub("", wav_path.stem).strip() or wav_path.stem
+    fixed = []
+    if "stamp" in kinds:
+        tc = verdict.stamp.detail.split(" | ")[0].removeprefix("name ").strip() if verdict.stamp else ""
+        fixed.append(f"BWF stamp OK now ({tc})" if tc.count(":") == 3 else "BWF stamp OK now")
+    if "silent" in kinds:
+        fixed.append("has audio now")
+    return f"\u2705 {stem}: " + ", ".join(fixed) + ", published"
+
+
 def _load_mixdown_waiting():
     try:
         return {Path(p): tuple(v) for p, v in json.loads(MIXDOWN_WAITING_PATH.read_text()).items()}
@@ -1061,6 +1110,7 @@ def handle_mixdown_wav(wav_path: Path, video_publisher=None):
             return
         cue_names = fetch_cue_names(proj)
         mode = load_bwf_mode()
+        fixed_alert = None  # an open alert this export clears, sent once it's published
         if mode != "off":
             scoring = local_dropbox_project(base_path) / "Scoring"
             if review_folder(scoring, wav_path, cue_names) is not None:  # production versions aren't checked
@@ -1075,6 +1125,15 @@ def handle_mixdown_wav(wav_path: Path, video_publisher=None):
                 if verdict.alert and _bwf_alerted.get(wav_path) != identity:
                     _bwf_alerted[wav_path] = identity
                     bwf_alert(proj, verdict.alert)
+                alert_key, kinds = _bwf_alert_key(wav_path), bwf_problem_kinds(verdict)
+                with _mixdown_inflight_lock:
+                    open_alert = _bwf_open_alerts.get(alert_key)
+                    if kinds:
+                        _bwf_open_alerts[alert_key] = {"kinds": sorted(set(kinds) | set((open_alert or {}).get("kinds", []))), "at": time.time()}
+                if kinds:
+                    _save_bwf_alerts()
+                elif open_alert:
+                    fixed_alert = (alert_key, bwf_fixed_message(wav_path, open_alert["kinds"], verdict))
                 if not verdict.publish:
                     _set_mixdown_waiting(wav_path, identity, f"bwf: {verdict.stamp.summary}")
                     log(f"[mixdown] {wav_path.name} held back by the BWF check (bwf_check = block) — "
@@ -1089,6 +1148,12 @@ def handle_mixdown_wav(wav_path: Path, video_publisher=None):
         _mixdown_uploaded[wav_path] = identity
         _set_mixdown_waiting(wav_path, None)
         log(f"[mixdown] published {len(wav_bytes)} bytes to Dropbox: {destination}")
+        if fixed_alert:
+            with _mixdown_inflight_lock:
+                _bwf_open_alerts.pop(fixed_alert[0], None)
+            _save_bwf_alerts()
+            log(f"[bwf] fixed: {fixed_alert[1]}")
+            send_telegram(f"\U0001F3BC {proj.get('title') or 'DS Monitor'}\n{fixed_alert[1]}")
         report_cue_mixdown(wav_path, proj)
     except Exception as e:
         log(f"[mixdown] error: {e}")
@@ -1528,6 +1593,7 @@ _mixdown_uploaded = {}      # path -> (size, mtime_ns) last uploaded, avoids dup
 _mixdown_inflight_lock = threading.Lock()
 _mixdown_waiting = _load_mixdown_waiting()  # path -> [size, mtime_ns(, bwf reason)] of skipped mixdowns
 _bwf_alerted = {}           # path -> (size, mtime_ns) last alerted, so one export alerts once
+_bwf_open_alerts = _load_bwf_alerts()  # cue key -> {"kinds": [...], "at": time} until a fixed export publishes
 
 def fetch_project_id_for_track(track_name):
     """Try to find project_id by matching track cue number against Supabase cues."""

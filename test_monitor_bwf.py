@@ -51,6 +51,8 @@ class HandleMixdownBwfTests(unittest.TestCase):
             mock.patch.object(monitor, "_mixdown_waiting", {}),
             mock.patch.object(monitor, "_mixdown_uploaded", {}),
             mock.patch.object(monitor, "_bwf_alerted", {}),
+            mock.patch.object(monitor, "_bwf_open_alerts", {}),
+            mock.patch.object(monitor, "MIXDOWN_BWF_ALERTS_PATH", self.home / "mixdown-bwf-alerts.json"),
             mock.patch.object(monitor, "_frame_rate_logged", set()),
             mock.patch.object(mixdown_publisher, "STAGING_DIR", self.home / "Library/Caches/ds-monitor/staging"),
             mock.patch.object(Path, "home", lambda: self.home),
@@ -146,6 +148,45 @@ class HandleMixdownBwfTests(unittest.TestCase):
         with mock.patch.object(monitor, "_fetch_monitor_cues", lambda p: {"cues": [], "frame_rate": "25"}):
             self.assertEqual(monitor.project_frame_rate({"id": "p1", "title": "33 Days"}), "25")
         self.assertIsNone(monitor.project_frame_rate({"id": "p1", "title": "33 Days"}))  # none from DS Scoring
+
+    def test_fixed_reexport_says_so_once(self):
+        self.export("3m37 Help Us 03.14.54.19.wav", bwf_wav(None))  # BWF chunk forgotten
+        self.export("3m37 Help Us 03.14.54.19.wav", GOOD)
+        self.assertEqual(len(self.telegrams), 2)
+        self.assertIn("no BWF timestamp", self.telegrams[0])
+        self.assertEqual(self.telegrams[1], "\U0001F3BC 33 Days\n\u2705 3m37 Help Us: BWF stamp OK now (03:14:54:19), published")
+        self.export("3m37 Help Us V1.1 03.14.54.19.wav", GOOD)  # later good exports stay quiet
+        self.assertEqual(len(self.telegrams), 2)
+        self.assertEqual(json.loads((self.home / "mixdown-bwf-alerts.json").read_text()), {})
+
+    def test_a_new_version_can_fix_the_old_one(self):
+        self.export("3m37 Help Us V1.1 03.14.54.19.wav", EARLY)
+        self.export("3m37 Help Us V1.2 03.14.54.19.wav", GOOD)
+        self.assertIn("\u2705 3m37 Help Us V1.2: BWF stamp OK now", self.telegrams[-1])
+
+    def test_silent_then_audio(self):
+        self.export("3m37 Help Us 03.14.54.19.wav", bwf_wav(561_911_350, SILENCE_24))
+        self.export("3m37 Help Us 03.14.54.19.wav", GOOD)
+        self.assertTrue(self.telegrams[-1].endswith("3m37 Help Us: has audio now, published"))
+
+    def test_good_export_without_an_earlier_alert_stays_quiet(self):
+        self.export("3m37 Help Us 03.14.54.19.wav", GOOD)
+        self.assertEqual(self.telegrams, [])
+
+    def test_held_back_export_is_not_a_fix_until_it_publishes(self):
+        self.export("3m37 Help Us 03.14.54.19.wav", EARLY, mode="block")
+        self.export("3m37 Help Us 03.14.54.19.wav", bwf_wav(None), mode="block")  # still wrong
+        self.assertFalse(any("\u2705" in m for m in self.telegrams))
+        self.export("3m37 Help Us 03.14.54.19.wav", GOOD, mode="block")
+        self.assertIn("\u2705", self.telegrams[-1])
+        self.assertEqual(self.published(), ["3m37 Help Us 03.14.54.19.wav"])
+
+    def test_open_alerts_survive_a_restart(self):
+        self.export("3m37 Help Us 03.14.54.19.wav", EARLY)
+        monitor._bwf_open_alerts.clear()
+        monitor._bwf_open_alerts.update(monitor._load_bwf_alerts())  # as at startup
+        self.export("3m37 Help Us 03.14.54.19.wav", GOOD)
+        self.assertIn("\u2705", self.telegrams[-1])
 
     def test_old_waiting_entries_still_load(self):
         (self.home / "mixdown-waiting.json").write_text(json.dumps({"/x/a.wav": [10, 20], "/x/b.wav": [1, 2, "bwf: x"]}))
