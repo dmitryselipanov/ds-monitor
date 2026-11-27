@@ -80,9 +80,9 @@ class ReportTests(unittest.TestCase):
         path = ROOT / "1m09/1m09 Behind The Glass.cpr"
         self.assertTrue(monitor.report_cue_saved(path)["changed"])
         url, headers, body = self.sent[0]
-        self.assertEqual(url, monitor.MONITOR_CUE_SAVED_URL)
+        self.assertEqual(url, monitor.MONITOR_CUE_EVENT_URL)
         self.assertEqual(headers["Authorization"], "Bearer s3cret")
-        self.assertEqual(body, {"project_id": "p1", "cue_number": "1m09"})
+        self.assertEqual(body, {"project_id": "p1", "cue_number": "1m09", "event": "saved"})
         self.assertEqual(self.notes, [("DS Monitor", "33 Days", "1m09 Behind The Glass → Writing")])
         monitor.report_cue_saved(path)  # later saves this run: nothing sent
         self.assertEqual(len(self.sent), 1)
@@ -123,6 +123,26 @@ class ReportTests(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", side_effect=OSError("offline")):
             self.assertIsNone(monitor.report_cue_saved(ROOT / "1m09/1m09 X.cpr"))
         self.assertTrue(any("couldn't reach" in l for l in self.logs))
+
+    def test_review_mix_moves_to_composed_and_is_reported_every_time(self):
+        self.reply = {"changed": True, "cue_number": "3m37", "title": "Help Us", "stage": "st_comp"}
+        wav = ROOT / "3m37/Mixdown/3m37 Help Us V1.2 03.14.54.19.wav"
+        monitor.report_cue_mixdown(wav, PROJECT)
+        self.assertEqual(self.sent[0][2], {"project_id": "p1", "cue_number": "3m37", "event": "mixdown"})
+        self.assertEqual(self.notes, [("DS Monitor", "33 Days", "3m37 Help Us → Composed")])
+        # a revision sends the cue back to Writing, so the next mix is reported again
+        monitor.report_cue_mixdown(wav, PROJECT)
+        self.assertEqual(len(self.sent), 2)
+
+    def test_review_mix_of_a_cue_already_composed_is_quiet(self):
+        self.reply = {"changed": False, "reason": "past writing"}
+        monitor.report_cue_mixdown(ROOT / "3m37/Mixdown/3m37 Help Us V1.3.wav", PROJECT)
+        self.assertEqual(self.notes, [])
+        self.assertFalse(any("not moved" in l for l in self.logs))
+
+    def test_review_mix_episode_comes_from_the_project_path(self):
+        monitor.report_cue_mixdown(Path("/P/Show/EP02/1m01/Mixdown/1m01 Open V1.wav"), PROJECT)
+        self.assertEqual(self.sent[0][2]["episode"], 2)
 
 
 if __name__ == "__main__":

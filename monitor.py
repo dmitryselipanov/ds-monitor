@@ -503,20 +503,23 @@ _NO_CPR_DIRS = {"audio", "edits", "images", "mixdown", "video exports", "auto sa
                 "track pictures", "fades", "presets", "stems", "bounces", "video", "renders"}
 
 
-# ── First save → Writing ─────────────────────────────────────────────────────
-# A saved cue .cpr ("1m09 Behind The Glass.cpr", or any .cpr in a "1m09" folder) is reported to
-# the Worker's /monitor-cue-saved, which moves that cue from Spotting to Writing in DS Scoring.
-# The Worker never moves a cue that is past Spotting, so later saves are no-ops; once a cue is
-# known to be past Spotting it isn't reported again until DS Monitor restarts.
-MONITOR_CUE_SAVED_URL = "https://ds-note-worker.drumadima.workers.dev/monitor-cue-saved"
+# ── Cue stages from work: first save → Writing, review mix → Composed ─────────
+# A saved cue .cpr ("1m09 Behind The Glass.cpr", or any .cpr in a "1m09" folder) and a published
+# review mix ("1m09 Behind The Glass V1.1.wav", see mixdown_publisher) are reported to the Worker's
+# /monitor-cue-event. It moves the cue forward only: Spotting → Writing on a save, Spotting or
+# Writing → Composed on a review mix. Once a cue is known to be past Spotting, saves of it aren't
+# reported again until DS Monitor restarts. Mixes always are: a revision puts the cue back to
+# Writing, and the next review mix should make it Composed again.
+MONITOR_CUE_EVENT_URL = "https://ds-note-worker.drumadima.workers.dev/monitor-cue-event"
 CPR_CUE_NUMBER = re.compile(r"^(\d{1,3}m(?:\d{1,3}[a-z]?|[a-z]))(?=$|[\s_.-])", re.IGNORECASE)
 EPISODE_FOLDER = re.compile(r"^EP\s*0*(\d{1,3})$", re.IGNORECASE)
+CUE_EVENT_STAGE = {"saved": "Writing", "mixdown": "Composed"}
 _cue_saved_done = set()     # (project id, cue, episode) already at Writing or later
 _cue_saved_logged = set()   # misses logged once per run
 
 
 def cue_number_for_cpr(path: Path):
-    """The cue number a .cpr belongs to (lower case), from its name, else its folder's name."""
+    """The cue number a .cpr (or a mixdown) belongs to (lower case), from its name, else its folder's name."""
     for name in (path.stem, path.parent.name):
         m = CPR_CUE_NUMBER.match(name.strip())
         if m:
@@ -533,55 +536,68 @@ def episode_for_path(path: Path):
     return None
 
 
-def report_cue_saved(path: Path):
-    """Tell DS Scoring a cue's project was saved. Returns the Worker's answer, or None."""
-    if re.search(r"-\d{2}$", path.stem) or any(p.lower() in _NO_CPR_DIRS for p in path.parts[:-1]):
-        return None
-    cue = cue_number_for_cpr(path)
-    if not cue:
-        return None
+def _report_cue_event(path: Path, project, cue: str, event: str):
+    """POST one cue event to the Worker; log, notify on a change. Returns the answer, or None."""
     secret = os.environ.get("DS_MONITOR_SECRET", "").strip()
     if not secret:
         if "secret" not in _cue_saved_logged:
             _cue_saved_logged.add("secret")
-            log("[writing] DS_MONITOR_SECRET not set — cue stages aren't updated from saves")
-        return None
-    project = resolve_project(path)
-    if not project or not project.get("id"):
+            log("[stage] DS_MONITOR_SECRET not set — cue stages aren't updated from your work")
         return None
     episode = episode_for_path(path)
     key = (project["id"], cue, episode)
-    if key in _cue_saved_done:
+    if event == "saved" and key in _cue_saved_done:
         return None
-    body = {"project_id": project["id"], "cue_number": cue}
+    body = {"project_id": project["id"], "cue_number": cue, "event": event}
     if episode is not None:
         body["episode"] = episode
     try:
         import urllib.request
         req = urllib.request.Request(
-            MONITOR_CUE_SAVED_URL, data=json.dumps(body).encode(), method="POST",
+            MONITOR_CUE_EVENT_URL, data=json.dumps(body).encode(), method="POST",
             headers={"Authorization": f"Bearer {secret}", "Content-Type": "application/json",
                      "User-Agent": "ds-monitor"})
         with urllib.request.urlopen(req, timeout=10) as r:
             result = json.loads(r.read() or b"{}")
     except Exception as e:
-        log(f"[writing] {path.name}: couldn't reach DS Scoring ({e})")
+        log(f"[stage] {path.name}: couldn't reach DS Scoring ({e})")
         return None
     title = project.get("title") or "DS Scoring"
+    stage = CUE_EVENT_STAGE[event]
     if result.get("changed"):
         _cue_saved_done.add(key)
         name = f"{result.get('cue_number') or cue} {result.get('title') or ''}".strip()
-        log(f"[writing] {title}: {name} → Writing (first save of {path.name})")
-        notify("DS Monitor", title, f"{name} → Writing")
-    elif result.get("reason") == "past spotting":
+        log(f"[stage] {title}: {name} → {stage} ({path.name})")
+        notify("DS Monitor", title, f"{name} → {stage}")
+    elif str(result.get("reason") or "").startswith("past "):
         _cue_saved_done.add(key)
-    elif key not in _cue_saved_logged:
-        _cue_saved_logged.add(key)
+    elif (key, event) not in _cue_saved_logged:
+        _cue_saved_logged.add((key, event))
         why = {"no cue": "no such cue in DS Scoring",
-               "ambiguous": "several cues share this number; put the .cpr under an EPxx folder"}
-        log(f"[writing] {path.name}: stage not changed — {why.get(result.get('reason'), result.get('error') or result)}")
+               "ambiguous": "several cues share this number; keep the project under an EPxx folder"}
+        log(f"[stage] {path.name}: not moved to {stage} — {why.get(result.get('reason'), result.get('error') or result)}")
     return result
 
+
+def report_cue_saved(path: Path):
+    """Tell DS Scoring a cue's project was saved (Spotting → Writing). Returns the Worker's answer, or None."""
+    if re.search(r"-\d{2}$", path.stem) or any(p.lower() in _NO_CPR_DIRS for p in path.parts[:-1]):
+        return None
+    cue = cue_number_for_cpr(path)
+    if not cue:
+        return None
+    project = resolve_project(path)
+    if not project or not project.get("id"):
+        return None
+    return _report_cue_event(path, project, cue, "saved")
+
+
+def report_cue_mixdown(wav_path: Path, project):
+    """Tell DS Scoring a review mix of a cue was published (Spotting/Writing → Composed)."""
+    cue = cue_number_for_cpr(wav_path)
+    if not cue or not project or not project.get("id"):
+        return None
+    return _report_cue_event(wav_path, project, cue, "mixdown")
 
 def notify(title: str, subtitle: str, body: str):
     try:
@@ -1073,6 +1089,7 @@ def handle_mixdown_wav(wav_path: Path, video_publisher=None):
         _mixdown_uploaded[wav_path] = identity
         _set_mixdown_waiting(wav_path, None)
         log(f"[mixdown] published {len(wav_bytes)} bytes to Dropbox: {destination}")
+        report_cue_mixdown(wav_path, proj)
     except Exception as e:
         log(f"[mixdown] error: {e}")
 
