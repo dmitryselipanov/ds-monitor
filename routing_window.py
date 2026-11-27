@@ -3,6 +3,8 @@ The cue's name, a one-line summary, then one section per kind of slip (what's wr
 to do), each listing the tracks with where they go now. Main thread only.
 """
 
+import math
+
 import objc
 from AppKit import (NSApp, NSButton, NSColor, NSFont, NSMakeRect, NSPanel, NSPasteboard,
                     NSScreen, NSScrollView, NSView, NSVisualEffectView)
@@ -19,15 +21,14 @@ from data_window import (NSBackingStoreBuffered, NSControlSizeSmall, NSFloatingW
                          NSWindowStyleMaskFullSizeContentView, NSWindowStyleMaskResizable,
                          NSWindowStyleMaskTitled, NSWindowTitleHidden, _Flipped, _text)
 
-WIDTH = 480
+MIN_WIDTH = 440
+MAX_HINT_LINE = 700  # a short hint stays on one line up to this window width
 PAD = 20
 ROW = 24
 HEAD_GAP = 18       # space above a section heading
 HEADING = 24        # heading line + separator
-HINT_LINE = 15      # one line of the grey "what to do" text
-HINT_CHARS = 70     # rough characters per hint line at WIDTH
 TOP = 92
-TARGET_W = 190      # right-hand column: where the track goes now
+ARROW_W = 18        # the → before where the track goes now
 
 _open = []          # panels and their controllers, kept so they aren't garbage-collected
 
@@ -64,27 +65,37 @@ def close_all():
         panel.close()
 
 
-def _hint_h(hint: str) -> int:
-    return HINT_LINE * (1 + len(hint) // HINT_CHARS)
+def _width(text, size, weight=None) -> float:
+    """How wide `text` draws on one line."""
+    f = _text(text, NSMakeRect(0, 0, 4000, 30), size=size, weight=weight)
+    f.sizeToFit()
+    return math.ceil(f.frame().size.width)
 
 
-def _place(groups):
-    """(item, y) for each heading / hint / row, and the list's total height."""
+def _wrap_h(text, size, width) -> float:
+    """How tall `text` is when wrapped to `width`."""
+    f = _text(text, NSMakeRect(0, 0, width, 30), size=size, wrap=True)
+    return math.ceil(f.cell().cellSizeForBounds_(NSMakeRect(0, 0, width, 100000)).size.height)
+
+
+def _place(groups, w):
+    """(item, y) for each heading / hint / row, and the list's total height at width w."""
     y, placed = 4, []
     for kind, heading, hint, rows in groups:
         y += HEAD_GAP if placed else 0
         placed.append((("heading", heading, len(rows)), y))
         y += HEADING
-        placed.append((("hint", hint), y))
-        y += _hint_h(hint) + 6
+        hh = _wrap_h(hint, 11, w - 2 * PAD)
+        placed.append((("hint", hint, hh), y))
+        y += hh + 6
         for r in rows:
             placed.append((("row", r), y))
             y += ROW
     return placed, y + 16
 
 
-def _list_view(groups, w):
-    placed, list_h = _place(groups)
+def _list_view(groups, w, target_w):
+    placed, list_h = _place(groups, w)
     doc = _Flipped.alloc().initWithFrame_(NSMakeRect(0, 0, w, list_h))
     doc.setAutoresizingMask_(NSViewWidthSizable)
     orange, secondary = NSColor.systemOrangeColor(), NSColor.secondaryLabelColor()
@@ -104,23 +115,23 @@ def _list_view(groups, w):
             for v in (h, c, line):
                 doc.addSubview_(v)
         elif it[0] == "hint":
-            hint = _text(it[1], NSMakeRect(PAD, y, w - 2 * PAD, _hint_h(it[1])), size=11,
+            hint = _text(it[1], NSMakeRect(PAD, y, w - 2 * PAD, it[2] + 2), size=11,
                          color=secondary, wrap=True)
             hint.setAutoresizingMask_(NSViewWidthSizable)
             doc.addSubview_(hint)
         else:
             r = it[1]
-            name = _text(r["track"], NSMakeRect(PAD, y + 3, w - 2 * PAD - TARGET_W - 12, 18),
+            name = _text(r["track"], NSMakeRect(PAD, y + 3, w - 2 * PAD - target_w - 12, 18),
                          size=13, weight=NSFontWeightMedium)
             name.setAutoresizingMask_(NSViewWidthSizable)
             doc.addSubview_(name)
             dest = target(r)
-            tx = w - PAD - TARGET_W
+            tx = w - PAD - target_w
             arrow = _text("→", NSMakeRect(tx - 4, y + 4, 16, 16), size=12, color=NSColor.tertiaryLabelColor())
             arrow.setAutoresizingMask_(NSViewMinXMargin)
             doc.addSubview_(arrow)
             # plain text: Cubase's output buses have no colour of their own
-            info = _text(dest, NSMakeRect(tx + 16, y + 4, TARGET_W - 16, 17), size=12, color=secondary)
+            info = _text(dest, NSMakeRect(tx + ARROW_W, y + 4, target_w - ARROW_W, 17), size=12, color=secondary)
             info.setAutoresizingMask_(NSViewMinXMargin)
             doc.addSubview_(info)
     return doc
@@ -130,14 +141,27 @@ def show(project: str, issues: list[dict], note: str = "", secs: float = 0.0, re
     """Open (or replace) the result window for `project`. recheck: called by Check Again."""
     close_all()
     groups = grouped(issues)
-    note_h = (16 * (1 + len(note) // 66) + 2) if note else 0
-    head_h = TOP + (note_h + 4 if note_h else 0)
-    body_h = _place(groups)[1] if groups else 40
+    rows = [r for g in groups for r in g[3]]
+    # wide enough for the longest track name and destination side by side, the title with its
+    # Copy button, and each hint on one line (up to MAX_HINT_LINE; longer hints wrap)
+    target_w = ARROW_W + max([_width(target(r), 12) for r in rows] or [0]) + 4
+    name_w = max([_width(r["track"], 13, NSFontWeightMedium) for r in rows] or [0]) + 4
+    w = max(MIN_WIDTH,
+            2 * PAD + name_w + 24 + target_w,
+            2 * PAD + _width(project, 18, NSFontWeightBold) + 100,
+            min(MAX_HINT_LINE, max([2 * PAD + _width(g[2], 11) + 4 for g in groups] or [0])))
+    screen = NSScreen.mainScreen()
+    vis = screen.visibleFrame() if screen is not None else None
+    if vis is not None:
+        w = min(w, vis.size.width - 40)
+    note_h = _wrap_h(note, 11, w - 2 * PAD) if note else 0
+    head_h = TOP + (note_h + 8 if note_h else 0)
+    body_h = _place(groups, w)[1] if groups else 40
     needed = head_h + body_h + 44                      # + the button row
     style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
              | NSWindowStyleMaskFullSizeContentView)
     panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-        NSMakeRect(120, 200, WIDTH, needed), style, NSBackingStoreBuffered, False)
+        NSMakeRect(0, 0, w, needed), style, NSBackingStoreBuffered, False)
     panel.setTitle_(f"Check Routing: {project}")
     panel.setTitleVisibility_(NSWindowTitleHidden)
     panel.setTitlebarAppearsTransparent_(True)
@@ -149,18 +173,14 @@ def show(project: str, issues: list[dict], note: str = "", secs: float = 0.0, re
     panel.setCollectionBehavior_(NSWindowCollectionBehaviorCanJoinAllSpaces
                                  | NSWindowCollectionBehaviorFullScreenAuxiliary)
     panel.setMinSize_((360, 180))
-    panel.setFrameAutosaveName_("DSCheckRouting")
     ctl = _RoutingController.alloc().initWithText_recheck_(as_text(project, issues, note), recheck)
     panel.setDelegate_(ctl)
 
-    screen = panel.screen() or NSScreen.mainScreen()
-    if screen is not None:                             # whole list, up to the screen's height
-        vis, f = screen.visibleFrame(), panel.frame()
+    if vis is not None:                                # taller than the screen: the list scrolls
+        f = panel.frame()
         title_bar = f.size.height - panel.contentRectForFrameRect_(f).size.height
-        hgt = min(needed + title_bar, vis.size.height)
-        top_edge = min(f.origin.y + f.size.height, vis.origin.y + vis.size.height)
-        y = max(vis.origin.y, top_edge - hgt)
-        panel.setFrame_display_(NSMakeRect(f.origin.x, y, f.size.width, hgt), True)
+        panel.setFrame_display_(NSMakeRect(0, 0, f.size.width, min(needed + title_bar, vis.size.height)), False)
+    panel.center()                                     # always opens in the middle of the screen
 
     content = panel.contentRectForFrameRect_(panel.frame())
     w, h = content.size.width, content.size.height
@@ -192,11 +212,11 @@ def show(project: str, issues: list[dict], note: str = "", secs: float = 0.0, re
 
     top = TOP
     if note:
-        nt = _text(note, NSMakeRect(PAD, h - top - note_h + 6, w - 2 * PAD, note_h), size=11,
+        nt = _text(note, NSMakeRect(PAD, h - top - note_h + 4, w - 2 * PAD, note_h + 2), size=11,
                    color=NSColor.secondaryLabelColor(), wrap=True)
         nt.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
         bg.addSubview_(nt)
-        top += note_h + 4
+        top += note_h + 8
 
     # bottom row: Check Again (save in Cubase first) and Done
     done = NSButton.buttonWithTitle_target_action_("Done", panel, "performClose:")
@@ -221,7 +241,7 @@ def show(project: str, issues: list[dict], note: str = "", secs: float = 0.0, re
         scroll.setDrawsBackground_(False)
         scroll.contentView().setDrawsBackground_(False)
         scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
-        scroll.setDocumentView_(_list_view(groups, w))
+        scroll.setDocumentView_(_list_view(groups, w, target_w))
         bg.addSubview_(scroll)
     else:
         ok = _text("No issues in tracks added or changed since the template.",

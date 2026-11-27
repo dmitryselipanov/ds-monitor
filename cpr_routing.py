@@ -344,10 +344,13 @@ def short(issue: dict) -> str:
 
 # The result window's sections, most common slip first: heading, then what to do about it.
 KINDS = [
-    ("family", "Into a family bus", "Skips the section. Route each to its section's DRY group "
-               "(band: 13a KIT … 13g VOX BGV)."),
-    ("none", "No group", "Goes straight to Stereo Out. Route each to its section's DRY group."),
-    ("bus", "Into a SUM or reverb bus", "Not a section group. Usually it belongs in that section's DRY group."),
+    ("family", "Into a family bus", "These output straight to a whole-family bus (an ALL or COMBINED "
+               "group) instead of a section's DRY group. Set each one's output to the DRY group "
+               "that fits it, e.g. 13a KIT … 13g VOX BGV in the band."),
+    ("none", "No group", "These output straight to Stereo Out, past every group. Set each one's "
+             "output to the DRY group that fits it."),
+    ("bus", "Into a SUM or reverb bus", "These output into a SUM or reverb channel instead of a "
+            "section group. Set each one's output to the DRY group that fits it."),
     ("same", "Same name, different groups", "Tracks sharing a name output to different groups. "
              "Rename one or fix its output."),
 ]
