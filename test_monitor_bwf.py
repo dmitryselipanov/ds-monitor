@@ -36,13 +36,14 @@ class HandleMixdownBwfTests(unittest.TestCase):
         self.mixdown = self.home / "Documents/PROJECTS/33 Days/3m37/Mixdown"
         self.mixdown.mkdir(parents=True)
         self.config = self.home / ".ds-monitor-config.json"
-        self.logs, self.alerts, self.telegrams = [], [], []
+        self.logs, self.alerts, self.telegrams, self.composed = [], [], [], []
         project = {"id": "p1", "title": "33 Days", "dropbox_base_path": "/Film Scoring/33 Days"}
         patches = [
             mock.patch.object(monitor, "log", self.logs.append),
             mock.patch.object(monitor, "notify", lambda t, s, b: self.alerts.append(b)),
             mock.patch.object(monitor, "send_telegram", self.telegrams.append),
             mock.patch.object(monitor, "resolve_project", lambda p: project),
+            mock.patch.object(monitor, "report_cue_mixdown", lambda w, p: self.composed.append(w.name)),
             mock.patch.object(monitor, "fetch_cue_names", lambda p: ["3m37 Help Us"]),
             mock.patch.object(monitor, "_fetch_monitor_cues", lambda p: None),
             mock.patch.object(monitor, "DS_CONFIG_PATH", self.config),
@@ -80,6 +81,7 @@ class HandleMixdownBwfTests(unittest.TestCase):
         self.assertEqual(self.telegrams, [])
         self.assertTrue(any(line.startswith("[bwf] PASS") and "23.976 fps (iXML)" in line for line in self.logs))
         self.assertFalse(any("checking stamps at" in line for line in self.logs))
+        self.assertEqual(self.composed, ["3m37 Help Us V1.2 03.14.54.19.wav"])  # review mix → Composed
 
     def test_export_without_ixml_or_ds_scoring_rate_logs_the_fallback_once(self):
         for _ in range(2):
@@ -103,6 +105,7 @@ class HandleMixdownBwfTests(unittest.TestCase):
     def test_block_mode_holds_back_and_waits_for_a_reexport(self):
         path = self.export("3m37 Help Us V1.2 03.14.54.19.wav", EARLY, mode="block")
         self.assertEqual(self.published(), [])
+        self.assertEqual(self.composed, [])  # held back: not Composed yet
         self.assertIn("not published", self.telegrams[0])
         entry = json.loads((self.home / "mixdown-waiting.json").read_text())[str(path)]
         self.assertTrue(entry[2].startswith("bwf: BWF stamp 11.720 s early"))

@@ -24,16 +24,23 @@ listed was enabled at that export. If the project was saved after the export, th
 window says so in orange: export again for an up-to-date list. Command line:
 `python3 tracks_with_data.py "/path/to/cue.cpr"`.
 
-## First save → Writing
+## Cue stages from your work
 
-Saving a cue's project in Cubase (`1m09 Behind The Glass.cpr`, or any `.cpr` inside a
-`1m09` folder) moves that cue from **Spotting** to **Writing** in DS Scoring, with a Mac
-notification. Only cues still at Spotting (or with no stage) move. A cue you've set to
-anything else is never changed, and the stage never goes backwards. In a series, keep cues under
-`EP01`-style folders: cue numbers repeat across episodes, and a number shared by several cues
-with no episode folder is left alone (the log says so). Cubase backups (`-01.cpr`) and Auto Saves don't
-count. It goes through the Worker's `/monitor-cue-saved` with `DS_MONITOR_SECRET`, the same
-secret the mixdown publisher uses, so nothing new needs setting up.
+**First save → Writing.** Saving a cue's project in Cubase (`1m09 Behind The Glass.cpr`, or any
+`.cpr` inside a `1m09` folder) moves that cue from **Spotting** to **Writing** in DS Scoring.
+
+**Review mix → Composed.** When a review mix is published (a mixdown named exactly like the cue,
+`1m09 Behind The Glass V1.1.wav`, see Mixdown publishing below), the cue moves from **Spotting** or
+**Writing** to **Composed**. A revision puts the cue back to Writing in DS Scoring, so the next
+review mix makes it Composed again. Production versions ("1m02 City Pulse - NO SAX") and mixes held
+back by the BWF check don't count.
+
+Both come with a Mac notification ("1m09 Behind The Glass → Composed"). Stages only move forward:
+a cue already further along, or set by hand, is never changed. In a series, keep cues under
+`EP01`-style folders: cue numbers repeat across episodes, and a number shared by several cues with
+no episode folder is left alone (the log says so). Cubase backups (`-01.cpr`) and Auto Saves don't
+count. It goes through the Worker's `/monitor-cue-event` with `DS_MONITOR_SECRET`, the same secret
+the mixdown publisher uses, so nothing new needs setting up.
 
 ## Video previews to Dropbox
 
