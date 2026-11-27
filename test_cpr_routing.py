@@ -252,5 +252,32 @@ class PlayingTracksTests(unittest.TestCase):
             self.assertEqual(cr.playing_tracks(xml), ["Ride (audio)"])
 
 
+class TestResultWindowText(unittest.TestCase):
+    ISSUES = [
+        {"track": "Piano", "kind": "family", "groups": ["06_PIANO ALL"]},
+        {"track": "Piano Main", "kind": "family", "groups": ["06_PIANO ALL"]},
+        {"track": "VII Str Ens Wh Sustains Low", "kind": "none", "groups": [], "also": []},
+        {"track": "Horn", "kind": "same", "groups": ["02a_BRASS DRY", "02b_BRASS DRY"]},
+    ]
+
+    def test_grouped_in_kinds_order_skipping_empty(self):
+        g = cr.grouped(self.ISSUES)
+        self.assertEqual([k for k, *_ in g], ["family", "none", "same"])
+        self.assertEqual([i["track"] for i in g[0][3]], ["Piano", "Piano Main"])
+
+    def test_target(self):
+        self.assertEqual(cr.target(self.ISSUES[0]), "06_PIANO ALL")
+        self.assertEqual(cr.target(self.ISSUES[2]), "Stereo Out")
+        self.assertEqual(cr.target(self.ISSUES[3]), "02a_BRASS DRY / 02b_BRASS DRY")
+
+    def test_as_text(self):
+        t = cr.as_text("3m37 Help Us", self.ISSUES, "a note")
+        self.assertTrue(t.startswith("3m37 Help Us: 4 routing issues"))
+        self.assertIn("Into a family bus (2):", t)
+        self.assertIn("  VII Str Ens Wh Sustains Low  →  Stereo Out", t)
+        self.assertTrue(t.endswith("a note"))
+        self.assertEqual(cr.as_text("X", []), "X: routing OK")
+
+
 if __name__ == "__main__":
     unittest.main()

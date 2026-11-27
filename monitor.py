@@ -646,6 +646,7 @@ def check_routing_now():
     for i in issues:
         log(f"[routing] {project.stem}: {describe(i)}")
     _routing("issues" if issues else "ok", project.stem, [short(i) for i in issues], secs)
+    routing_state["issues"] = issues
     if enabled is None:
         routing_state["note"] = "No XML export next to this project yet, so disabled tracks are included."
     else:
@@ -1768,6 +1769,14 @@ class DSMonitorApp(rumps.App):
         """An open menu doesn't redraw, so the result also pops up in a small window."""
         r = routing_state
         routing_state["alert"] = False
+        if r["status"] in ("ok", "issues"):
+            try:
+                import routing_window
+                routing_window.show(r["project"], r.get("issues") or [], r.get("note", ""), r["secs"],
+                                    recheck=lambda: self.check_routing(None))
+                return
+            except Exception as e:
+                log(f"[routing] result window failed ({e}); plain alert instead")
         if r["status"] == "ok":
             note = f"\n\n{r['note']}" if r.get("note") else ""
             rumps.alert(f"{r['project']}: routing OK", "No issues in tracks added or changed since the template." + note)
