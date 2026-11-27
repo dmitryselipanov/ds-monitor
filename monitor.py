@@ -604,7 +604,7 @@ def _routing(status, project="", lines=None, secs=0.0):
 def check_routing_now():
     """Menu item: compare the last saved project's routing with the template and report slips in
     tracks added or re-routed since. Save in Cubase (Cmd+S) first: it reads the file on disk.
-    The result shows in the menu (and as a notification, when macOS allows them)."""
+    The result opens in its own window (and as a notification, when macOS allows them)."""
     from cpr_routing import routing_records, template_records, project_issues, describe, short, enabled_tracks, only_enabled
     t0 = time.time()
     _routing("checking")
@@ -1782,32 +1782,20 @@ class DSMonitorApp(rumps.App):
             rumps.alert(f"{r['project']}: routing OK", "No issues in tracks added or changed since the template." + note)
         elif r["status"] == "issues":
             n = len(r["lines"])
-            more = f"\n… and {n - 15} more (see the menu)" if n > 15 else ""
+            more = f"\n… and {n - 15} more (see the log)" if n > 15 else ""
             note = f"\n\n{r['note']}" if r.get("note") else ""
             rumps.alert(f"{r['project']}: {n} routing issue{'s' if n != 1 else ''}", "\n".join(r["lines"][:15]) + more + note)
         elif r["status"] == "error":
             rumps.alert("Check Routing", "\n".join(r["lines"]))
 
     def routing_items(self):
-        """Check Routing, then its last result: OK, or each issue as its own line."""
+        """Just the Check Routing item: results open in their own window (routing_window)."""
         r = routing_state
         if r["status"] == "checking":
             self.routing_item.title = "Checking routing…" + (f" ({r['project']})" if r["project"] else "")
-            return [self.routing_item]
-        self.routing_item.title = "Check Routing (save first)"
-        out = [self.routing_item]
-        when = f" — {r['secs']:.0f}s" if r["secs"] >= 1 else ""
-        if r["status"] == "ok":
-            out.append(rumps.MenuItem(f"✓ Routing OK: {r['project']}{when}", callback=None))
-        elif r["status"] == "issues":
-            n = len(r["lines"])
-            out.append(rumps.MenuItem(f"⚠ {n} routing issue{'s' if n != 1 else ''}: {r['project']}{when}", callback=None))
-            out.extend(rumps.MenuItem("    " + l[:70], callback=None) for l in r["lines"][:12])
-            if n > 12:
-                out.append(rumps.MenuItem(f"    … {n - 12} more in the log", callback=None))
-        elif r["status"] == "error":
-            out.extend(rumps.MenuItem("✗ " + l[:90], callback=None) for l in r["lines"])
-        return out
+        else:
+            self.routing_item.title = "Check Routing (save first)"
+        return [self.routing_item]
 
     def toggle_ai(self, _):
         global AI_ENABLED
